@@ -18,6 +18,7 @@ The goal of V1 is to deliver a real, usable backend platform that:
 
 V1 is intentionally focused on the core financial operations layer.
 It does not include advanced investment, broker aggregation, Google Calendar sync, or Telegram command workflows beyond basic outbound notifications.
+Cross-cutting contracts for documentation governance, domain semantics, and architecture boundaries are defined in [master-spec.md](master-spec.md), [domain-spec.md](domain-spec.md), and [product-architecture-spec.md](product-architecture-spec.md).
 
 ## 2. Product Goal
 
@@ -81,6 +82,11 @@ The following items are explicitly deferred to V2/V3:
 - refresh token: long-lived JWT with server-side session validation in Redis,
 - stateless access validation plus stateful refresh revocation.
 
+### 4.4 V1 Tenancy Boundary
+- V1 tenancy is strictly `user-centric`.
+- Household-owned resources and household sharing flows are out of scope.
+- Telegram in V1 is an outbound delivery channel only, not a command surface or identity source.
+
 ## 5. Core User Scenarios
 
 ### 5.1 Statement Import
@@ -122,6 +128,8 @@ The following items are explicitly deferred to V2/V3:
 - `OpenAPI` is the source of truth for public HTTP contracts.
 - Services must support graceful shutdown and structured logging.
 - All asynchronous handlers must be idempotent.
+- `ClickHouse` projections are non-canonical and must not be used for authoritative money calculations in V1.
+- Telegram is a notification endpoint, not a privileged control plane in V1.
 
 ## 7. Service Decomposition
 
