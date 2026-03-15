@@ -253,7 +253,7 @@ sequenceDiagram
     participant MG as MongoDB
     participant RMQ as RabbitMQ
     participant K as Kafka
-    participant PAR as parser-service
+    participant PRS as parser-service
 
     U->>ING: POST /imports/raw (file)
     ING->>ING: compute sha256 / import_id
@@ -261,11 +261,11 @@ sequenceDiagram
     ING->>RMQ: publish parse.statement
     ING->>K: publish statement.uploaded
     ING-->>U: 202 Accepted
-    RMQ->>PAR: deliver parse job
-    PAR->>MG: load raw import
-    PAR->>PAR: normalize rows
-    PAR->>MG: upsert parsed_imports
-    PAR->>K: publish statement.parsed
+    RMQ->>PRS: deliver parse job
+    PRS->>MG: load raw import
+    PRS->>PRS: normalize rows
+    PRS->>MG: upsert parsed_imports
+    PRS->>K: publish statement.parsed
 ```
 
 ### 10.2 Auth Flow
@@ -793,3 +793,4 @@ Deferred after V1:
 - portfolio analytics,
 - investment planning,
 - advanced forecast engine.
+

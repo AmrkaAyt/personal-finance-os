@@ -48,5 +48,7 @@ curl http://localhost:8083/parser/results/<import_id>
 This bootstrap includes compileable core service skeletons, shared platform code, OpenAPI, graceful shutdown, and a working Docker-backed ingest/parser pipeline. The remaining services still use scaffolds and can now be wired incrementally on the same foundation.
 
 ## Documentation
+- [Master Specification](docs/master-spec.md)
 - [V1 Specification](docs/v1-spec.md)
+
 
