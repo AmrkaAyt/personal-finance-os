@@ -1,0 +1,164 @@
+openapi: 3.1.0
+info:
+  title: Personal Finance OS API Gateway
+  version: 0.2.0
+servers:
+  - url: http://localhost:8080
+paths:
+  /api/v1/ping:
+    get:
+      summary: Gateway health ping
+      responses:
+        '200':
+          description: Gateway is ready
+  /api/v1/profile:
+    get:
+      summary: Get current authenticated profile
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Authenticated profile
+  /auth/login:
+    post:
+      summary: Exchange username and password for a JWT pair
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: JWT pair
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenPair'
+  /auth/refresh:
+    post:
+      summary: Refresh access token using a refresh token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+      responses:
+        '200':
+          description: Refreshed JWT pair
+  /imports/raw:
+    post:
+      summary: Upload a raw statement import into MongoDB and enqueue parse work
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '202':
+          description: Raw import accepted
+  /imports/{import_id}:
+    get:
+      summary: Get raw import status from MongoDB
+      parameters:
+        - in: path
+          name: import_id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Raw import metadata
+  /parser/results/{import_id}:
+    get:
+      summary: Get parsed import projection from MongoDB
+      parameters:
+        - in: path
+          name: import_id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Parsed import projection
+  /api/v1/transactions:
+    get:
+      summary: List transactions from the ledger service
+      responses:
+        '200':
+          description: Transactions list
+    post:
+      summary: Store a transaction in the ledger service
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Transaction'
+      responses:
+        '201':
+          description: Transaction created
+  /api/v1/recurring:
+    get:
+      summary: Detect recurring transactions from the current ledger slice
+      responses:
+        '200':
+          description: Recurring patterns
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+    RefreshRequest:
+      type: object
+      required: [refresh_token]
+      properties:
+        refresh_token:
+          type: string
+    TokenPair:
+      type: object
+      properties:
+        access_token:
+          type: string
+        refresh_token:
+          type: string
+        token_type:
+          type: string
+        expires_in:
+          type: integer
+    Transaction:
+      type: object
+      properties:
+        id:
+          type: string
+        user_id:
+          type: string
+        account_id:
+          type: string
+        merchant:
+          type: string
+        category:
+          type: string
+        amount_cents:
+          type: integer
+        currency:
+          type: string
+        occurred_at:
+          type: string
+          format: date-time

@@ -1,0 +1,4 @@
+merchant,amount,currency,date,category
+Netflix,15.99,USD,2026-03-01,subscriptions
+Coffee Shop,-4.50,USD,2026-03-02,food
+Salary,1000.00,USD,2026-03-03,income

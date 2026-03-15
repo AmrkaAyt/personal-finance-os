@@ -1,0 +1,9 @@
+/bin/
+/dist/
+/.idea/
+/.vscode/
+/.tmp/
+/var/
+*.log
+.env
+/.gocache/
