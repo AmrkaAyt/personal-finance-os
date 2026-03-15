@@ -66,6 +66,16 @@ The following items are explicitly deferred to V2/V3:
 - automated trading,
 - mobile applications.
 
+### 3.3 Supported Import Matrix and Limits
+
+Committed V1 sources:
+- `CSV` statements only
+
+V1 limits:
+- max file size `5 MB`
+- max parsed rows per file `50,000`
+- unsupported formats must be rejected explicitly
+
 ## 4. Product Users and Roles
 
 ### 4.1 Primary User
@@ -78,14 +88,21 @@ The following items are explicitly deferred to V2/V3:
 
 ### 4.3 V1 Authentication Model
 - login/password for seeded demo users,
+- durable identity for seeded demo users lives outside Redis,
 - access token: short-lived JWT,
 - refresh token: long-lived JWT with server-side session validation in Redis,
-- stateless access validation plus stateful refresh revocation.
+- stateless access validation plus stateful refresh revocation,
+- Redis is canonical only for active refresh sessions in V1.
 
 ### 4.4 V1 Tenancy Boundary
 - V1 tenancy is strictly `user-centric`.
 - Household-owned resources and household sharing flows are out of scope.
 - Telegram in V1 is an outbound delivery channel only, not a command surface or identity source.
+
+### 4.5 V1 Obligation Semantics
+- V1 obligation control is delivered through recurring-charge detection plus explainable alerts and reminders.
+- Detected recurring candidates are inferred artifacts, not canonical obligation truth by default.
+- Planner-owned `Obligation` lifecycle remains a V2 concern.
 
 ## 5. Core User Scenarios
 
@@ -130,20 +147,24 @@ The following items are explicitly deferred to V2/V3:
 - All asynchronous handlers must be idempotent.
 - `ClickHouse` projections are non-canonical and must not be used for authoritative money calculations in V1.
 - Telegram is a notification endpoint, not a privileged control plane in V1.
+- budget semantics are committed in V1 even if a dedicated `budget-service` is not yet extracted.
+- detected recurring patterns are inferred artifacts and must not redefine canonical transaction truth.
 
 ## 7. Service Decomposition
 
 | Service | Responsibility | Protocols | Storage / Brokers | V1 Status |
 | --- | --- | --- | --- | --- |
 | `api-gateway` | External entrypoint, routing, auth middleware, WebSocket entrypoint | REST, WebSocket | JWT manager | scaffold |
-| `auth-service` | Login, refresh, RBAC claims, Redis-backed refresh sessions | REST | Redis | partially implemented |
+| `auth-service` | Login, refresh, RBAC claims, seeded identity resolution, Redis-backed refresh sessions | REST | seeded config, Redis | partially implemented |
 | `ingest-service` | Raw file import, dedup, MongoDB storage, Rabbit publish, Kafka publish | REST | MongoDB, RabbitMQ, Kafka | implemented |
 | `parser-service` | Async parse consumer, normalization, parsed projection, Kafka publish | RabbitMQ, REST | MongoDB, Kafka | implemented |
 | `ledger-service` | Transactions, categories, recurring detection, query API | REST | PostgreSQL | scaffold |
-| `rule-engine` | Consume transaction events, detect overspend/anomalies, publish notification jobs | Kafka, RabbitMQ | Redis optional | scaffold |
+| `rule-engine` | Consume transaction events, detect overspend/anomalies, persist rule hits, publish notification jobs | Kafka, RabbitMQ | PostgreSQL, RabbitMQ | scaffold |
 | `notification-service` | Telegram delivery, retry policy, DLQ handling | RabbitMQ | Redis optional | scaffold |
 | `analytics-writer` | Consume domain events and write analytical projections | Kafka | ClickHouse | scaffold |
 | `realtime-gateway` | WebSocket sessions, presence, live dashboard fan-out | WebSocket | Redis | scaffold |
+
+V1 budget semantics may remain co-located in ledger and rule flows until a dedicated `budget-service` is extracted.
 
 ## 8. System Context Diagram
 
@@ -335,6 +356,9 @@ sequenceDiagram
 - `FR-ING-004`: raw import must be stored in MongoDB.
 - `FR-ING-005`: parse job must be enqueued in RabbitMQ.
 - `FR-ING-006`: upload event must be emitted to Kafka.
+- `FR-ING-007`: V1 must accept `CSV` statements only.
+- `FR-ING-008`: uploads larger than `5 MB` must be rejected.
+- `FR-ING-009`: files exceeding `50,000` parsed rows must be rejected or marked unsupported.
 - `FR-PAR-001`: parser must consume parse jobs asynchronously.
 - `FR-PAR-002`: parser must store normalized parsed projection in MongoDB.
 - `FR-PAR-003`: parser must emit `statement.parsed` to Kafka.
@@ -354,6 +378,8 @@ sequenceDiagram
 - `FR-RULE-002`: rule engine must detect simple overspend conditions.
 - `FR-RULE-003`: rule engine must detect simple anomaly conditions.
 - `FR-RULE-004`: rule engine must publish notification jobs to RabbitMQ.
+- `FR-RULE-005`: repeated hits for the same dedup key within the active window must not emit duplicate user-visible alerts.
+- `FR-RULE-006`: rule hits must persist evaluation trace with rule id, evaluator version, and input references.
 
 ### 11.5 Notifications
 
@@ -366,6 +392,7 @@ sequenceDiagram
 - `FR-RT-001`: realtime gateway must expose WebSocket endpoint.
 - `FR-RT-002`: realtime gateway must track connection state in Redis.
 - `FR-RT-003`: system must push live import / alert / dashboard updates.
+- `FR-RT-004`: on reconnect, client must receive replay from last known event id or an explicit resync signal.
 - `FR-AN-001`: analytics writer must consume Kafka domain events.
 - `FR-AN-002`: analytics writer must write analytical projections into ClickHouse.
 
@@ -404,7 +431,7 @@ sequenceDiagram
 - `occurred_at`
 - `source_import_id`
 
-#### Recurring Pattern
+#### Detected Recurring Pattern
 - `merchant`
 - `category`
 - `amount_cents`
@@ -596,7 +623,12 @@ All public V1 HTTP handlers must be represented there.
 - repeated parse job must not create duplicate parsed projection,
 - ledger upsert must use `source_import_id` plus transaction fingerprint to avoid duplicate transactions.
 
-### 16.2 Recurring Detection
+### 16.2 Transfer Handling in V1
+
+- V1 must not auto-classify ambiguous movements as transfers without explicit parser signal or confirmed linked-account mapping.
+- transfer suggestions may exist internally, but user-visible spend truth must remain conservative.
+
+### 16.3 Recurring Detection
 
 Initial recurring logic in V1:
 - group by merchant + category + currency + amount,
@@ -604,14 +636,14 @@ Initial recurring logic in V1:
 - detect interval in the `25-35` day range,
 - return average interval and count.
 
-### 16.3 Overspend Detection
+### 16.4 Overspend Detection
 
 Initial V1 heuristic:
 - compare category spend to configured monthly limit,
 - trigger warning at `80 percent`,
 - trigger critical alert at `100 percent`.
 
-### 16.4 Anomaly Detection
+### 16.5 Anomaly Detection
 
 Initial V1 heuristic:
 - transaction amount above configured threshold,

@@ -76,7 +76,7 @@ User who wants automation, Telegram workflows, exports, rule tuning, and scenari
 | --- | --- | --- |
 | Core ingestion and parsing | bring external finance data into the system | `Committed` for V1 |
 | Ledger and categories | canonical transaction truth | `Committed` for V1 |
-| Recurring detection and obligation alerts | early operational value | `Committed` for V1 |
+| Recurring detection and obligation alerts | early operational value through inferred recurring charges and reminders | `Committed` for V1 |
 | Budget baseline and overspend alerts | spending control | `Committed` for V1 |
 | Realtime dashboard foundation | live visibility of core workflows | `Committed` for V1 |
 | Goals and savings planning | medium-term planning | `Planned` for V2 |
@@ -104,6 +104,13 @@ Tracked actions include:
 - resolving an anomaly,
 - updating a goal or forecast assumption.
 
+Guardrails:
+- only meaningful signals count in the denominator,
+- repeated acknowledgement of the same unresolved item does not count as a new action,
+- suppressed noisy alerts do not improve the metric,
+- the action must happen within the configured attribution window after the signal,
+- action rate must be reviewed alongside signal precision and alert volume.
+
 ### 7.2 Supporting Metrics
 
 - `first import completion rate`
@@ -129,6 +136,16 @@ Every major insight type must support an action path.
 | Forecast shortfall | add planned expense or income, update obligation timing, accept risk explicitly |
 
 If an insight cannot trigger a user decision, it belongs in backlog or analytics, not in the core product loop.
+
+## 8.1 V1 Obligation Control Semantics
+
+Before planner-owned obligations exist, V1 obligation control means:
+- detect candidate recurring charges from imported transaction history,
+- allow the user to confirm or reject recurring candidates,
+- emit alerts or reminders for confirmed or high-confidence recurring obligations,
+- avoid claiming full planner-grade obligation lifecycle before V2.
+
+V1 does not require a complete obligation scheduler to justify the wedge, but it must not pretend inferred recurring charges are already full obligation truth.
 
 ## 9. Roadmap Themes
 
