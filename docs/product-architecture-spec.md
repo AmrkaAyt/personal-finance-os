@@ -18,6 +18,109 @@ The architecture rule is:
 
 `one canonical owner per business concern, many consumers, zero duplicated money semantics`
 
+### 2.1 High-Level System Context
+
+```mermaid
+flowchart LR
+    USER[Web / API Client]
+    TG[Telegram]
+    CAL[Calendar Provider]
+    EXT[Broker / Research APIs]
+
+    GW[api-gateway]
+    AUTH[auth-service]
+    ING[ingest-service]
+    PAR[parser-service]
+    LED[ledger-service]
+    BUD[budget-service]
+    PLAN[planner-service]
+    RULE[rule-engine]
+    NOTIF[notification-service]
+    RT[realtime-gateway]
+    AN[analytics-writer]
+    TEL[telegram-adapter]
+    CS[calendar-sync-service]
+    WEALTH[wealth-service]
+    RESEARCH[research-service]
+
+    PG[(PostgreSQL)]
+    MG[(MongoDB)]
+    RD[(Redis)]
+    K[(Kafka)]
+    RMQ[(RabbitMQ)]
+    CH[(ClickHouse)]
+
+    USER --> GW
+    TG --> TEL
+    GW --> AUTH
+    GW --> ING
+    GW --> LED
+    GW --> BUD
+    GW --> PLAN
+    GW --> RT
+    GW --> WEALTH
+    ING --> MG
+    ING --> RMQ
+    ING --> K
+    PAR --> MG
+    RMQ --> PAR
+    PAR --> K
+    K --> LED
+    K --> BUD
+    K --> PLAN
+    K --> RULE
+    K --> AN
+    K --> RT
+    LED --> PG
+    BUD --> PG
+    PLAN --> PG
+    RULE --> PG
+    NOTIF --> PG
+    TEL --> PG
+    CS --> PG
+    WEALTH --> PG
+    AUTH --> RD
+    RT --> RD
+    AN --> CH
+    WEALTH --> CH
+    TEL --> RMQ
+    RULE --> RMQ
+    RMQ --> NOTIF
+    PLAN --> CS
+    CS --> CAL
+    WEALTH --> EXT
+    RESEARCH --> EXT
+    RESEARCH --> K
+    RESEARCH --> CH
+```
+
+### 2.2 Canonical Write and Derived Read Flow
+
+```mermaid
+flowchart LR
+    I[Import accepted]
+    P[Parsed artifact]
+    L[Ledger canonical state]
+    PL[Planning canonical state]
+    N[Notification lifecycle]
+    E[Kafka domain events]
+    A[Analytical projections]
+    R[Realtime fan-out]
+    D[Decision features]
+    REP[Reports and trend widgets]
+
+    I --> P
+    P --> L
+    L --> E
+    PL --> E
+    E --> A
+    E --> R
+    E --> N
+    L --> D
+    PL --> D
+    A --> REP
+```
+
 ## 3. Service Ownership Matrix
 
 | Service | Owns writes for | Canonical state | Build status |

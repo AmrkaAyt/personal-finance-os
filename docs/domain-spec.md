@@ -52,6 +52,32 @@ Household membership alone is not enough to expose account-level data.
 - advisor visibility is always explicit and read-only,
 - realtime and Telegram fan-out must resolve the same scope model as REST reads.
 
+### 2.5 Tenancy and Sharing Diagram
+
+```mermaid
+flowchart TD
+    OU[Owner User]
+    HH[Household]
+    ACC[Personal Account]
+    TX[Personal Transactions]
+    HB[Household Budget]
+    HG[Household Goal]
+    ADV[Advisor Read-Only]
+    GRANT[Explicit scope grant]
+    MEMBER[Household Member]
+
+    OU --> ACC
+    ACC --> TX
+    OU --> HH
+    HH --> HB
+    HH --> HG
+    HH --> MEMBER
+    OU --> GRANT --> ADV
+    HH -. no implicit access .-> ACC
+    MEMBER -. scoped access only .-> HB
+    ADV -. read-only by grant .-> TX
+```
+
 ## 3. Access and Consent Model
 
 ### 3.1 Roles
@@ -204,6 +230,28 @@ Wealth-readiness assessment requires:
 - debt visibility where applicable.
 
 If any required input is missing or stale, the system must not claim investment readiness.
+
+### 4.8 Canonical Money Decision Flow
+
+```mermaid
+flowchart LR
+    RAW[Raw imports]
+    PARSED[Parsed imports]
+    LEDGER[Canonical ledger<br/>transactions + balances]
+    PLAN[Canonical planning<br/>budgets + obligations + goals + forecast inputs]
+    DECISION[Affordability / free cash / obligation coverage]
+    CH[(ClickHouse projections)]
+    DASH[Reports and trend widgets]
+
+    RAW --> PARSED
+    PARSED --> LEDGER
+    LEDGER --> PLAN
+    LEDGER --> DECISION
+    PLAN --> DECISION
+    LEDGER -. events .-> CH
+    PLAN -. events .-> CH
+    CH --> DASH
+```
 
 ## 5. Lifecycle State Models
 

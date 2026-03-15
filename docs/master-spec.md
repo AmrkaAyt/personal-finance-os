@@ -29,6 +29,25 @@ Planned later:
 
 Until version-specific specs exist, V2 and V3 capabilities remain directionally planned or exploratory, not build commitments.
 
+### 2.1 Documentation Stack Diagram
+
+```mermaid
+flowchart TD
+    M[master-spec.md<br/>index + precedence]
+    C[product-charter.md<br/>product wedge + KPIs + module status]
+    A[product-architecture-spec.md<br/>service boundaries + transport + NFR]
+    D[domain-spec.md<br/>tenancy + money semantics + state models]
+    V1[v1-spec.md<br/>current implementation contract]
+
+    M --> C
+    M --> A
+    M --> D
+    M --> V1
+    C -. informs .-> V1
+    A -. constrains .-> V1
+    D -. constrains .-> V1
+```
+
 ## 3. Status Language
 
 Every capability and architectural choice must use one of these statuses:
