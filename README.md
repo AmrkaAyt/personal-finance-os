@@ -151,6 +151,7 @@ Details:
 This bootstrap includes shared platform code, OpenAPI, graceful shutdown, startup retry/backoff for external dependencies, and a working Docker-backed event pipeline for auth, gateway routing, import, parsing, ledger persistence, rule evaluation, notification dispatch, analytics projections, and realtime fan-out. Gateway-level integration tests cover `login -> import -> parse` and `login -> create transaction -> analytics/alerts`. Telegram V1 now supports real outbound delivery, basic polling commands, and statement document intake for `CSV` and text-based `PDF`.
 
 ## Documentation
+- [Current Implementation Status](docs/implementation-status.md)
 - [Master Documentation Index](docs/master-spec.md)
 - [Product Charter](docs/product-charter.md)
 - [Product Architecture Specification](docs/product-architecture-spec.md)
