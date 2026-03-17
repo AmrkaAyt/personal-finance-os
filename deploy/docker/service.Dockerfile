@@ -10,5 +10,6 @@ FROM alpine:3.20
 RUN apk add --no-cache ca-certificates
 WORKDIR /app
 COPY --from=builder /out/service /app/service
+COPY migrations /app/migrations
 EXPOSE 8080
 ENTRYPOINT ["/app/service"]

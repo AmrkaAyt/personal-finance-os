@@ -37,7 +37,7 @@ type service struct {
 	parsedTopic      string
 	kafkaWriter      *kafka.Writer
 	requestTimeout   time.Duration
-	fieldCipher      *cryptox.FieldCipher
+	keyring          *cryptox.Keyring
 }
 
 func main() {
@@ -55,7 +55,11 @@ func main() {
 	parseQueue := env.String("RABBIT_PARSE_QUEUE", "parse.statement")
 	kafkaBrokers := env.Strings("KAFKA_BROKERS", []string{"localhost:9092"})
 	parsedTopic := env.String("KAFKA_PARSED_TOPIC", "statement.parsed")
-	fieldCipher, err := cryptox.NewFieldCipherFromBase64(env.String("DATA_ENCRYPTION_KEY_B64", ""))
+	keyring, err := cryptox.NewKeyring(
+		env.String("DATA_ENCRYPTION_KEY_ID", "local-v1"),
+		env.String("DATA_ENCRYPTION_KEY_B64", ""),
+		env.String("DATA_ENCRYPTION_LEGACY_KEYS", ""),
+	)
 	if err != nil {
 		panic(err)
 	}
@@ -137,7 +141,7 @@ func main() {
 		parsedTopic:      parsedTopic,
 		kafkaWriter:      kafkaWriter,
 		requestTimeout:   requestTimeout,
-		fieldCipher:      fieldCipher,
+		keyring:          keyring,
 	}
 
 	mux := http.NewServeMux()
@@ -329,7 +333,7 @@ func (s *service) markRawStatus(ctx context.Context, userID, importID, status st
 
 func (s *service) decryptRawImport(raw imports.RawImport) ([]byte, error) {
 	if len(raw.ContentEnc) > 0 {
-		return s.fieldCipher.Decrypt(raw.ContentEnc, raw.ContentNnc)
+		return s.keyring.Decrypt(raw.ContentEnc, raw.ContentNnc, raw.ContentKID)
 	}
 	return raw.Content, nil
 }

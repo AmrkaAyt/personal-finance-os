@@ -5,8 +5,10 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -14,61 +16,15 @@ type Repository struct {
 	pool *pgxpool.Pool
 }
 
-func NewRepository(pool *pgxpool.Pool) *Repository {
-	return &Repository{pool: pool}
+type dbtx interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	SendBatch(ctx context.Context, b *pgx.Batch) pgx.BatchResults
 }
 
-func (r *Repository) EnsureSchema(ctx context.Context) error {
-	schema := `
-CREATE TABLE IF NOT EXISTS categories (
-    name text PRIMARY KEY,
-    kind text NOT NULL DEFAULT 'system',
-    created_at timestamptz NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS transactions (
-    id text PRIMARY KEY,
-    user_id text NOT NULL,
-    account_id text NOT NULL,
-    source_import_id text NOT NULL,
-    fingerprint text NOT NULL,
-    merchant text NOT NULL,
-    category text NOT NULL,
-    amount_cents bigint NOT NULL,
-    currency text NOT NULL,
-    occurred_at timestamptz NOT NULL,
-    raw_line text NOT NULL DEFAULT '',
-    created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz NOT NULL DEFAULT now()
-);
-
-CREATE INDEX IF NOT EXISTS idx_transactions_user_occurred_at ON transactions (user_id, occurred_at DESC);
-CREATE INDEX IF NOT EXISTS idx_transactions_account_occurred_at ON transactions (account_id, occurred_at DESC);
-CREATE INDEX IF NOT EXISTS idx_transactions_source_import_id ON transactions (source_import_id);
-CREATE INDEX IF NOT EXISTS idx_transactions_merchant_occurred_at ON transactions (merchant, occurred_at DESC);
-ALTER TABLE transactions DROP CONSTRAINT IF EXISTS transactions_source_fingerprint_key;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_transactions_user_source_fingerprint ON transactions (user_id, source_import_id, fingerprint);
-`
-	if _, err := r.pool.Exec(ctx, schema); err != nil {
-		return err
-	}
-
-	batch := &pgx.Batch{}
-	for _, category := range DefaultCategories {
-		batch.Queue(`
-INSERT INTO categories (name, kind)
-VALUES ($1, 'system')
-ON CONFLICT (name) DO NOTHING
-`, category)
-	}
-	results := r.pool.SendBatch(ctx, batch)
-	for range DefaultCategories {
-		if _, err := results.Exec(); err != nil {
-			_ = results.Close()
-			return err
-		}
-	}
-	return results.Close()
+func NewRepository(pool *pgxpool.Pool) *Repository {
+	return &Repository{pool: pool}
 }
 
 func (r *Repository) UpsertTransaction(ctx context.Context, transaction Transaction) (Transaction, error) {
@@ -80,13 +36,51 @@ func (r *Repository) UpsertTransaction(ctx context.Context, transaction Transact
 }
 
 func (r *Repository) UpsertTransactions(ctx context.Context, transactions []Transaction) ([]Transaction, error) {
+	return r.upsertTransactions(ctx, r.pool, transactions)
+}
+
+func (r *Repository) UpsertTransactionWithOutbox(ctx context.Context, transaction Transaction, topic string) (Transaction, error) {
+	transactions, err := r.UpsertTransactionsWithOutbox(ctx, []Transaction{transaction}, topic)
+	if err != nil {
+		return Transaction{}, err
+	}
+	return transactions[0], nil
+}
+
+func (r *Repository) UpsertTransactionsWithOutbox(ctx context.Context, transactions []Transaction, topic string) ([]Transaction, error) {
+	if len(transactions) == 0 {
+		return nil, nil
+	}
+
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+
+	stored, err := r.upsertTransactions(ctx, tx, transactions)
+	if err != nil {
+		return nil, err
+	}
+	if err := r.enqueueOutboxEvents(ctx, tx, topic, stored); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return stored, nil
+}
+
+func (r *Repository) upsertTransactions(ctx context.Context, db dbtx, transactions []Transaction) ([]Transaction, error) {
 	if len(transactions) == 0 {
 		return nil, nil
 	}
 
 	stored := make([]Transaction, 0, len(transactions))
 	for _, transaction := range transactions {
-		existingID, err := r.findTransactionID(ctx, transaction.UserID, transaction.SourceImportID, transaction.Fingerprint)
+		existingID, err := r.findTransactionID(ctx, db, transaction.UserID, transaction.SourceImportID, transaction.Fingerprint)
 		if err != nil {
 			return nil, err
 		}
@@ -94,7 +88,7 @@ func (r *Repository) UpsertTransactions(ctx context.Context, transactions []Tran
 			transaction.ID = existingID
 		}
 
-		row := r.pool.QueryRow(ctx, `
+		row := db.QueryRow(ctx, `
 INSERT INTO transactions (
     id,
     user_id,
@@ -156,15 +150,15 @@ RETURNING id, user_id, account_id, source_import_id, fingerprint, merchant, cate
 		}
 		stored = append(stored, storedTransaction)
 	}
-	if err := r.ensureCategories(ctx, stored); err != nil {
+	if err := r.ensureCategories(ctx, db, stored); err != nil {
 		return nil, err
 	}
 	return stored, nil
 }
 
-func (r *Repository) findTransactionID(ctx context.Context, userID, sourceImportID, fingerprint string) (string, error) {
+func (r *Repository) findTransactionID(ctx context.Context, db dbtx, userID, sourceImportID, fingerprint string) (string, error) {
 	var id string
-	err := r.pool.QueryRow(ctx, `
+	err := db.QueryRow(ctx, `
 SELECT id
 FROM transactions
 WHERE user_id = $1 AND source_import_id = $2 AND fingerprint = $3
@@ -180,6 +174,87 @@ WHERE user_id = $1 AND source_import_id = $2 AND fingerprint = $3
 		return "", nil
 	}
 	return "", err
+}
+
+func (r *Repository) ClaimPendingOutboxEvents(ctx context.Context, limit int, owner string, claimTTL time.Duration) ([]OutboxEvent, error) {
+	if limit <= 0 {
+		limit = 1
+	}
+	if claimTTL <= 0 {
+		claimTTL = 30 * time.Second
+	}
+
+	rows, err := r.pool.Query(ctx, `
+WITH candidates AS (
+    SELECT id
+    FROM outbox_events
+    WHERE published_at IS NULL
+      AND (claim_expires_at IS NULL OR claim_expires_at < now())
+    ORDER BY created_at ASC
+    LIMIT $1
+    FOR UPDATE SKIP LOCKED
+)
+UPDATE outbox_events AS o
+SET claim_owner = $2,
+    claimed_at = now(),
+    claim_expires_at = now() + ($3::bigint * interval '1 millisecond'),
+    publish_attempts = o.publish_attempts + 1
+FROM candidates
+WHERE o.id = candidates.id
+RETURNING o.id, o.topic, o.message_key, o.event_type, o.payload, o.publish_attempts, o.last_error, o.claim_owner, o.claimed_at, o.claim_expires_at, o.created_at, o.published_at
+`, limit, strings.TrimSpace(owner), claimTTL.Milliseconds())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	events := make([]OutboxEvent, 0, limit)
+	for rows.Next() {
+		var event OutboxEvent
+		if err := rows.Scan(
+			&event.ID,
+			&event.Topic,
+			&event.MessageKey,
+			&event.EventType,
+			&event.Payload,
+			&event.PublishAttempts,
+			&event.LastError,
+			&event.ClaimOwner,
+			&event.ClaimedAt,
+			&event.ClaimExpiresAt,
+			&event.CreatedAt,
+			&event.PublishedAt,
+		); err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	return events, rows.Err()
+}
+
+func (r *Repository) MarkOutboxEventPublished(ctx context.Context, eventID string) error {
+	_, err := r.pool.Exec(ctx, `
+UPDATE outbox_events
+SET published_at = now(),
+    last_error = '',
+    claim_owner = NULL,
+    claimed_at = NULL,
+    claim_expires_at = NULL
+WHERE id = $1
+`, strings.TrimSpace(eventID))
+	return err
+}
+
+func (r *Repository) ReleaseOutboxEventClaim(ctx context.Context, eventID, lastError string) error {
+	_, err := r.pool.Exec(ctx, `
+UPDATE outbox_events
+SET last_error = $2,
+    claim_owner = NULL,
+    claimed_at = NULL,
+    claim_expires_at = NULL
+WHERE id = $1
+`, strings.TrimSpace(eventID), strings.TrimSpace(lastError))
+	return err
 }
 
 func (r *Repository) ListTransactions(ctx context.Context, userID string, limit int) ([]Transaction, error) {
@@ -262,7 +337,7 @@ func (r *Repository) ListCategories(ctx context.Context) ([]string, error) {
 	return categories, nil
 }
 
-func (r *Repository) ensureCategories(ctx context.Context, transactions []Transaction) error {
+func (r *Repository) ensureCategories(ctx context.Context, db dbtx, transactions []Transaction) error {
 	if len(transactions) == 0 {
 		return nil
 	}
@@ -286,8 +361,43 @@ VALUES ($1, 'derived')
 ON CONFLICT (name) DO NOTHING
 `, name)
 	}
-	results := r.pool.SendBatch(ctx, batch)
+	results := db.SendBatch(ctx, batch)
 	for range names {
+		if _, err := results.Exec(); err != nil {
+			_ = results.Close()
+			return err
+		}
+	}
+	return results.Close()
+}
+
+func (r *Repository) enqueueOutboxEvents(ctx context.Context, db dbtx, topic string, transactions []Transaction) error {
+	if len(transactions) == 0 {
+		return nil
+	}
+
+	batch := &pgx.Batch{}
+	for _, transaction := range transactions {
+		event, err := NewTransactionOutboxEvent(topic, transaction)
+		if err != nil {
+			return err
+		}
+		batch.Queue(`
+INSERT INTO outbox_events (
+    id,
+    topic,
+    message_key,
+    event_type,
+    payload
+) VALUES (
+    $1, $2, $3, $4, $5::jsonb
+)
+ON CONFLICT (id) DO NOTHING
+`, event.ID, event.Topic, event.MessageKey, event.EventType, []byte(event.Payload))
+	}
+
+	results := db.SendBatch(ctx, batch)
+	for range transactions {
 		if _, err := results.Exec(); err != nil {
 			_ = results.Close()
 			return err

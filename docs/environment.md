@@ -14,6 +14,7 @@ The project uses a two-layer environment model:
    - service-specific defaults
    - `HTTP_ADDR`
    - consumer groups
+   - Kafka quarantine / retry policy
    - service-local prefixes and limits
 
 Go services auto-load:
@@ -36,6 +37,7 @@ Shell-provided environment variables still win over file values.
 - `env/notification-service.env`
 - `env/analytics-writer.env`
 - `env/realtime-gateway.env`
+- `env/sensitive-data-maintenance.env`
 
 ## Local Development
 
@@ -64,6 +66,7 @@ Good examples:
 - `env/notification-service.local.env` for Telegram bot credentials
 - `env/notification-service.local.env` for `INGEST_SERVICE_URL` / `PARSER_SERVICE_URL` overrides during bot development
 - `.env.local` for machine-specific ports
+- `env/sensitive-data-maintenance.local.env` for one-shot data hygiene runs
 
 ## Compose
 
@@ -72,3 +75,40 @@ Good examples:
 - shared values from root `.env`
 - service defaults from `env/<service>.env`
 - container-specific overrides inline in Compose for internal hostnames such as `postgres`, `redis`, `mongodb`, `rabbitmq`, `kafka`, `clickhouse`
+
+## Sensitive Data Keys
+
+The encryption layer uses:
+
+- `DATA_ENCRYPTION_KEY_ID`
+- `DATA_ENCRYPTION_KEY_B64`
+- `DATA_ENCRYPTION_LEGACY_KEYS`
+
+`DATA_ENCRYPTION_LEGACY_KEYS` format:
+
+```text
+old-v1=BASE64_KEY_1,old-v2=BASE64_KEY_2
+```
+
+Use this when decrypting historical data during key rotation or maintenance.
+
+## Kafka Consumer Recovery
+
+Kafka consumer services can define:
+
+- `KAFKA_QUARANTINE_TOPIC`
+- `KAFKA_CONSUMER_RETRY_BACKOFF`
+- `KAFKA_CONSUMER_RETRY_MAX_ATTEMPTS`
+
+Current default quarantine topic:
+
+```text
+event.quarantine
+```
+
+These values are currently defined in:
+
+- `env/ledger-service.env`
+- `env/rule-engine.env`
+- `env/analytics-writer.env`
+- `env/realtime-gateway.env`

@@ -190,6 +190,8 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     ports:
       - "${LEDGER_SERVICE_PORT:-8084}:8084"
     environment:
@@ -286,6 +288,52 @@ services:
       retries: 10
       start_period: 15s
 
+  migrate:
+    <<: *service-defaults
+    restart: "no"
+    env_file:
+      - ../.env
+      - ../env/migrate.env
+    build:
+      context: ..
+      dockerfile: deploy/docker/service.Dockerfile
+      args:
+        SERVICE: migrate
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    environment:
+      <<: *runtime-env
+      POSTGRES_DSN: postgres://${POSTGRES_USER:-finance}:${POSTGRES_PASSWORD:-finance}@postgres:5432/${POSTGRES_DB:-finance}?sslmode=disable
+      CLICKHOUSE_DSN: http://${CLICKHOUSE_USER:-finance}:${CLICKHOUSE_PASSWORD:-finance}@clickhouse:8123
+      CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-finance_os}
+
+  sensitive-data-maintenance:
+    <<: *service-defaults
+    restart: "no"
+    env_file:
+      - ../.env
+      - ../env/sensitive-data-maintenance.env
+    build:
+      context: ..
+      dockerfile: deploy/docker/service.Dockerfile
+      args:
+        SERVICE: sensitive-data-maintenance
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+    environment:
+      <<: *runtime-env
+      POSTGRES_DSN: postgres://${POSTGRES_USER:-finance}:${POSTGRES_PASSWORD:-finance}@postgres:5432/${POSTGRES_DB:-finance}?sslmode=disable
+      MONGO_URI: mongodb://mongodb:27017
+      MONGO_DATABASE: ${MONGO_DATABASE:-finance_os}
+      MONGO_RAW_COLLECTION: ${MONGO_RAW_COLLECTION:-raw_imports}
+      MONGO_PARSED_COLLECTION: ${MONGO_PARSED_COLLECTION:-parsed_imports}
+
   analytics-writer:
     <<: *service-defaults
     env_file:
@@ -301,6 +349,8 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     ports:
       - "${ANALYTICS_WRITER_PORT:-8087}:8087"
     environment:

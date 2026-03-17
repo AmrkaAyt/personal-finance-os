@@ -28,11 +28,22 @@ The repository now includes a real local pipeline for `api-gateway`, `auth-servi
 - `analytics-writer` consumes `transaction.upserted` and `alert.created`
 - `ClickHouse` stores analytical projections for spend and alerts
 - `realtime-gateway` consumes `transaction.upserted` and `alert.created`
+- malformed Kafka payloads are quarantined into `event.quarantine` without killing consumers
 - `Redis` stores WebSocket presence and subscription state
 
 ### Start with Docker Compose
 ```bash
 docker compose -f deploy/docker-compose.yml up --build api-gateway auth-service ingest-service parser-service ledger-service rule-engine notification-service analytics-writer realtime-gateway mongodb rabbitmq kafka postgres redis clickhouse
+```
+
+### Run schema migrations explicitly
+```bash
+docker compose -f deploy/docker-compose.yml run --rm migrate
+```
+
+### Run sensitive-data maintenance explicitly
+```bash
+docker compose -f deploy/docker-compose.yml run --rm sensitive-data-maintenance
 ```
 
 ### Run integration tests against the gateway
@@ -113,19 +124,19 @@ curl -X POST \
 ### Query spend analytics
 ```bash
 curl -H "Authorization: Bearer <access_token>" \
-  "http://localhost:8080/api/v1/analytics/projections/daily-spend?user_id=user-demo&from=2026-03-01&to=2026-03-31"
+  "http://localhost:8080/api/v1/analytics/projections/daily-spend?from=2026-03-01&to=2026-03-31"
 ```
 
 ### Query alert analytics
 ```bash
 curl -H "Authorization: Bearer <access_token>" \
-  "http://localhost:8080/api/v1/analytics/projections/alerts?user_id=user-demo&from=2026-03-01&to=2026-03-31"
+  "http://localhost:8080/api/v1/analytics/projections/alerts?from=2026-03-01&to=2026-03-31"
 ```
 
 ### Inspect realtime presence
 ```bash
 curl -H "Authorization: Bearer <access_token>" \
-  "http://localhost:8080/api/v1/presence?user_id=user-demo"
+  "http://localhost:8080/api/v1/presence"
 ```
 
 ### Connect to realtime WebSocket
@@ -148,10 +159,11 @@ Details:
 - [Environment Structure](docs/environment.md)
 
 ## Current scope
-This bootstrap includes shared platform code, OpenAPI, graceful shutdown, startup retry/backoff for external dependencies, and a working Docker-backed event pipeline for auth, gateway routing, import, parsing, ledger persistence, rule evaluation, notification dispatch, analytics projections, and realtime fan-out. Gateway-level integration tests cover `login -> import -> parse` and `login -> create transaction -> analytics/alerts`. Telegram V1 now supports real outbound delivery, basic polling commands, and statement document intake for `CSV` and text-based `PDF`.
+This bootstrap includes shared platform code, OpenAPI, graceful shutdown, startup retry/backoff for external dependencies, versioned database migrations, sensitive-data maintenance, and a working Docker-backed event pipeline for auth, gateway routing, import, parsing, ledger persistence, rule evaluation, notification dispatch, analytics projections, and realtime fan-out. Gateway-level integration tests cover `login -> import -> parse` and `login -> create transaction -> analytics/alerts`. Telegram V1 now supports real outbound delivery, basic polling commands, and statement document intake for `CSV` and text-based `PDF`.
 
 ## Documentation
 - [Current Implementation Status](docs/implementation-status.md)
+- [Technical Debt Register](docs/technical-debt-register.md)
 - [Master Documentation Index](docs/master-spec.md)
 - [Product Charter](docs/product-charter.md)
 - [Product Architecture Specification](docs/product-architecture-spec.md)

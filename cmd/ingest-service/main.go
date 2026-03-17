@@ -37,7 +37,7 @@ type service struct {
 	uploadedTopic  string
 	kafkaWriter    *kafka.Writer
 	requestTimeout time.Duration
-	fieldCipher    *cryptox.FieldCipher
+	keyring        *cryptox.Keyring
 }
 
 type logger interface {
@@ -59,7 +59,11 @@ func main() {
 	parseQueue := env.String("RABBIT_PARSE_QUEUE", "parse.statement")
 	kafkaBrokers := env.Strings("KAFKA_BROKERS", []string{"localhost:9092"})
 	uploadedTopic := env.String("KAFKA_IMPORT_TOPIC", "statement.uploaded")
-	fieldCipher, err := cryptox.NewFieldCipherFromBase64(env.String("DATA_ENCRYPTION_KEY_B64", ""))
+	keyring, err := cryptox.NewKeyring(
+		env.String("DATA_ENCRYPTION_KEY_ID", "local-v1"),
+		env.String("DATA_ENCRYPTION_KEY_B64", ""),
+		env.String("DATA_ENCRYPTION_LEGACY_KEYS", ""),
+	)
 	if err != nil {
 		panic(err)
 	}
@@ -134,7 +138,7 @@ func main() {
 		uploadedTopic:  uploadedTopic,
 		kafkaWriter:    kafkaWriter,
 		requestTimeout: requestTimeout,
-		fieldCipher:    fieldCipher,
+		keyring:        keyring,
 	}
 
 	mux := http.NewServeMux()
@@ -171,7 +175,7 @@ func (s *service) handleImport(w http.ResponseWriter, r *http.Request) {
 	hash := sha256.Sum256(payload)
 	importID := hex.EncodeToString(hash[:])
 	now := time.Now().UTC()
-	encryptedPayload, encryptedNonce, err := s.fieldCipher.Encrypt(payload)
+	encryptedPayload, encryptedNonce, keyID, err := s.keyring.Encrypt(payload)
 	if err != nil {
 		httpx.JSON(w, http.StatusInternalServerError, map[string]string{"error": "encryption_failed"})
 		return
@@ -184,6 +188,7 @@ func (s *service) handleImport(w http.ResponseWriter, r *http.Request) {
 		SizeBytes:  len(payload),
 		ContentEnc: encryptedPayload,
 		ContentNnc: encryptedNonce,
+		ContentKID: keyID,
 		Status:     "stored",
 		ReceivedAt: now,
 		UpdatedAt:  now,

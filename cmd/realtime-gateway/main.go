@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -31,12 +30,18 @@ type service struct {
 	presenceStore     realtime.PresenceStore
 	transactionReader *kafka.Reader
 	alertReader       *kafka.Reader
+	quarantineWriter  *kafka.Writer
 	requestTimeout    time.Duration
 	stateTTL          time.Duration
 	redisAddr         string
 	redisPrefix       string
 	transactionTopic  string
 	alertTopic        string
+	transactionGroup  string
+	alertGroup        string
+	quarantineTopic   string
+	retryBackoff      time.Duration
+	maxAttempts       int
 }
 
 func main() {
@@ -54,6 +59,9 @@ func main() {
 	alertTopic := env.String("KAFKA_ALERT_TOPIC", "alert.created")
 	transactionGroup := env.String("KAFKA_TRANSACTION_CONSUMER_GROUP", "realtime-gateway-transactions")
 	alertGroup := env.String("KAFKA_ALERT_CONSUMER_GROUP", "realtime-gateway-alerts")
+	quarantineTopic := env.String("KAFKA_QUARANTINE_TOPIC", "event.quarantine")
+	retryBackoff := env.Duration("KAFKA_CONSUMER_RETRY_BACKOFF", 2*time.Second)
+	maxAttempts := env.Int("KAFKA_CONSUMER_RETRY_MAX_ATTEMPTS", 3)
 
 	startupCtx, cancel := context.WithTimeout(context.Background(), startupTimeout)
 	defer cancel()
@@ -80,6 +88,11 @@ func main() {
 	}
 	if err := startupx.Retry(startupCtx, logger, "kafka ensure alert topic", func(ctx context.Context) error {
 		return kafkax.EnsureTopic(ctx, kafkaBrokers, alertTopic, 1, 1)
+	}); err != nil {
+		panic(err)
+	}
+	if err := startupx.Retry(startupCtx, logger, "kafka ensure quarantine topic", func(ctx context.Context) error {
+		return kafkax.EnsureTopic(ctx, kafkaBrokers, quarantineTopic, 1, 1)
 	}); err != nil {
 		panic(err)
 	}
@@ -118,6 +131,10 @@ func main() {
 	defer func() {
 		_ = alertReader.Close()
 	}()
+	quarantineWriter := kafkax.NewWriter(kafkaBrokers, quarantineTopic)
+	defer func() {
+		_ = quarantineWriter.Close()
+	}()
 
 	svc := &service{
 		logger:            logger,
@@ -125,12 +142,18 @@ func main() {
 		presenceStore:     presenceStore,
 		transactionReader: transactionReader,
 		alertReader:       alertReader,
+		quarantineWriter:  quarantineWriter,
 		requestTimeout:    requestTimeout,
 		stateTTL:          stateTTL,
 		redisAddr:         redisAddr,
 		redisPrefix:       redisPrefix,
 		transactionTopic:  transactionTopic,
 		alertTopic:        alertTopic,
+		transactionGroup:  transactionGroup,
+		alertGroup:        alertGroup,
+		quarantineTopic:   quarantineTopic,
+		retryBackoff:      retryBackoff,
+		maxAttempts:       maxAttempts,
 	}
 
 	mux := http.NewServeMux()
@@ -187,6 +210,7 @@ func (s *service) handleConfig(w http.ResponseWriter, _ *http.Request) {
 	httpx.JSON(w, http.StatusOK, map[string]any{
 		"transaction_topic": s.transactionTopic,
 		"alert_topic":       s.alertTopic,
+		"quarantine_topic":  s.quarantineTopic,
 		"redis_addr":        s.redisAddr,
 		"redis_prefix":      s.redisPrefix,
 		"state_ttl":         s.stateTTL.String(),
@@ -200,46 +224,36 @@ func (s *service) handleConfig(w http.ResponseWriter, _ *http.Request) {
 
 func (s *service) consumeTransactions(ctx context.Context, logger *slog.Logger) error {
 	logger.Info("realtime transaction consumer ready", "topic", s.transactionTopic)
-	for {
-		message, err := s.transactionReader.FetchMessage(ctx)
-		if err != nil {
-			if errors.Is(err, context.Canceled) || ctx.Err() != nil {
-				return nil
-			}
-			return err
-		}
-		if err := s.handleTransactionMessage(ctx, message); err != nil {
-			return err
-		}
-		if err := s.transactionReader.CommitMessages(ctx, message); err != nil {
-			return err
-		}
-	}
+	return kafkax.ConsumeLoop(ctx, kafkax.ConsumerOptions{
+		Name:             "realtime-transaction-consumer",
+		Reader:           s.transactionReader,
+		QuarantineWriter: s.quarantineWriter,
+		Handler:          s.handleTransactionMessage,
+		Logger:           logger,
+		ConsumerGroup:    s.transactionGroup,
+		RetryBackoff:     s.retryBackoff,
+		MaxAttempts:      s.maxAttempts,
+	})
 }
 
 func (s *service) consumeAlerts(ctx context.Context, logger *slog.Logger) error {
 	logger.Info("realtime alert consumer ready", "topic", s.alertTopic)
-	for {
-		message, err := s.alertReader.FetchMessage(ctx)
-		if err != nil {
-			if errors.Is(err, context.Canceled) || ctx.Err() != nil {
-				return nil
-			}
-			return err
-		}
-		if err := s.handleAlertMessage(ctx, message); err != nil {
-			return err
-		}
-		if err := s.alertReader.CommitMessages(ctx, message); err != nil {
-			return err
-		}
-	}
+	return kafkax.ConsumeLoop(ctx, kafkax.ConsumerOptions{
+		Name:             "realtime-alert-consumer",
+		Reader:           s.alertReader,
+		QuarantineWriter: s.quarantineWriter,
+		Handler:          s.handleAlertMessage,
+		Logger:           logger,
+		ConsumerGroup:    s.alertGroup,
+		RetryBackoff:     s.retryBackoff,
+		MaxAttempts:      s.maxAttempts,
+	})
 }
 
 func (s *service) handleTransactionMessage(ctx context.Context, message kafka.Message) error {
 	var event ledger.TransactionUpsertedEvent
 	if err := json.Unmarshal(message.Value, &event); err != nil {
-		return err
+		return kafkax.Permanent(err)
 	}
 
 	_ = ctx
@@ -251,7 +265,7 @@ func (s *service) handleTransactionMessage(ctx context.Context, message kafka.Me
 func (s *service) handleAlertMessage(ctx context.Context, message kafka.Message) error {
 	var alert rules.Alert
 	if err := json.Unmarshal(message.Value, &alert); err != nil {
-		return err
+		return kafkax.Permanent(err)
 	}
 
 	_ = ctx

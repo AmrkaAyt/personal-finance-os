@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -35,6 +34,7 @@ type service struct {
 	clickhouse        *clickhousex.Client
 	transactionReader *kafka.Reader
 	alertReader       *kafka.Reader
+	quarantineWriter  *kafka.Writer
 	requestTimeout    time.Duration
 	database          string
 	transactionTable  string
@@ -43,6 +43,9 @@ type service struct {
 	alertTopic        string
 	transactionGroup  string
 	alertGroup        string
+	quarantineTopic   string
+	retryBackoff      time.Duration
+	maxAttempts       int
 }
 
 type transactionEventRow struct {
@@ -89,6 +92,9 @@ func main() {
 	alertTopic := env.String("KAFKA_ALERT_TOPIC", "alert.created")
 	transactionGroup := env.String("KAFKA_TRANSACTION_CONSUMER_GROUP", "analytics-writer-transactions")
 	alertGroup := env.String("KAFKA_ALERT_CONSUMER_GROUP", "analytics-writer-alerts")
+	quarantineTopic := env.String("KAFKA_QUARANTINE_TOPIC", "event.quarantine")
+	retryBackoff := env.Duration("KAFKA_CONSUMER_RETRY_BACKOFF", 2*time.Second)
+	maxAttempts := env.Int("KAFKA_CONSUMER_RETRY_MAX_ATTEMPTS", 3)
 	clickhouseDatabase := env.String("CLICKHOUSE_DATABASE", "finance_os")
 
 	startupCtx, cancel := context.WithTimeout(context.Background(), startupTimeout)
@@ -100,11 +106,6 @@ func main() {
 	}
 	if err := startupx.Retry(startupCtx, logger, "clickhouse ping", func(ctx context.Context) error {
 		return clickhouseClient.Ping(ctx)
-	}); err != nil {
-		panic(err)
-	}
-	if err := startupx.Retry(startupCtx, logger, "clickhouse ensure analytics schema", func(ctx context.Context) error {
-		return ensureSchema(ctx, clickhouseClient, clickhouseDatabase)
 	}); err != nil {
 		panic(err)
 	}
@@ -121,6 +122,11 @@ func main() {
 	}
 	if err := startupx.Retry(startupCtx, logger, "kafka ensure alert topic", func(ctx context.Context) error {
 		return kafkax.EnsureTopic(ctx, kafkaBrokers, alertTopic, 1, 1)
+	}); err != nil {
+		panic(err)
+	}
+	if err := startupx.Retry(startupCtx, logger, "kafka ensure quarantine topic", func(ctx context.Context) error {
+		return kafkax.EnsureTopic(ctx, kafkaBrokers, quarantineTopic, 1, 1)
 	}); err != nil {
 		panic(err)
 	}
@@ -146,12 +152,17 @@ func main() {
 	defer func() {
 		_ = alertReader.Close()
 	}()
+	quarantineWriter := kafkax.NewWriter(kafkaBrokers, quarantineTopic)
+	defer func() {
+		_ = quarantineWriter.Close()
+	}()
 
 	svc := &service{
 		logger:            logger,
 		clickhouse:        clickhouseClient,
 		transactionReader: transactionReader,
 		alertReader:       alertReader,
+		quarantineWriter:  quarantineWriter,
 		requestTimeout:    requestTimeout,
 		database:          sanitizeIdentifier(clickhouseDatabase),
 		transactionTable:  qualifiedTable(clickhouseDatabase, transactionEventsTable),
@@ -160,6 +171,9 @@ func main() {
 		alertTopic:        alertTopic,
 		transactionGroup:  transactionGroup,
 		alertGroup:        alertGroup,
+		quarantineTopic:   quarantineTopic,
+		retryBackoff:      retryBackoff,
+		maxAttempts:       maxAttempts,
 	}
 
 	mux := http.NewServeMux()
@@ -193,8 +207,9 @@ func (s *service) handleMetadata(w http.ResponseWriter, _ *http.Request) {
 			"transactions": s.transactionGroup,
 			"alerts":       s.alertGroup,
 		},
-		"database": s.database,
-		"tables":   []string{s.transactionTable, s.alertTable},
+		"quarantine_topic": s.quarantineTopic,
+		"database":         s.database,
+		"tables":           []string{s.transactionTable, s.alertTable},
 		"endpoints": []string{
 			"/api/v1/analytics/projections/daily-spend",
 			"/api/v1/analytics/projections/alerts",
@@ -366,46 +381,36 @@ func (s *service) parseCommonFilters(r *http.Request) (string, time.Time, time.T
 
 func (s *service) consumeTransactions(ctx context.Context, logger *slog.Logger) error {
 	logger.Info("analytics transaction consumer ready", "topic", s.transactionTopic, "table", s.transactionTable)
-	for {
-		message, err := s.transactionReader.FetchMessage(ctx)
-		if err != nil {
-			if errors.Is(err, context.Canceled) || ctx.Err() != nil {
-				return nil
-			}
-			return err
-		}
-		if err := s.handleTransactionMessage(ctx, message); err != nil {
-			return err
-		}
-		if err := s.transactionReader.CommitMessages(ctx, message); err != nil {
-			return err
-		}
-	}
+	return kafkax.ConsumeLoop(ctx, kafkax.ConsumerOptions{
+		Name:             "analytics-transaction-consumer",
+		Reader:           s.transactionReader,
+		QuarantineWriter: s.quarantineWriter,
+		Handler:          s.handleTransactionMessage,
+		Logger:           logger,
+		ConsumerGroup:    s.transactionGroup,
+		RetryBackoff:     s.retryBackoff,
+		MaxAttempts:      s.maxAttempts,
+	})
 }
 
 func (s *service) consumeAlerts(ctx context.Context, logger *slog.Logger) error {
 	logger.Info("analytics alert consumer ready", "topic", s.alertTopic, "table", s.alertTable)
-	for {
-		message, err := s.alertReader.FetchMessage(ctx)
-		if err != nil {
-			if errors.Is(err, context.Canceled) || ctx.Err() != nil {
-				return nil
-			}
-			return err
-		}
-		if err := s.handleAlertMessage(ctx, message); err != nil {
-			return err
-		}
-		if err := s.alertReader.CommitMessages(ctx, message); err != nil {
-			return err
-		}
-	}
+	return kafkax.ConsumeLoop(ctx, kafkax.ConsumerOptions{
+		Name:             "analytics-alert-consumer",
+		Reader:           s.alertReader,
+		QuarantineWriter: s.quarantineWriter,
+		Handler:          s.handleAlertMessage,
+		Logger:           logger,
+		ConsumerGroup:    s.alertGroup,
+		RetryBackoff:     s.retryBackoff,
+		MaxAttempts:      s.maxAttempts,
+	})
 }
 
 func (s *service) handleTransactionMessage(ctx context.Context, message kafka.Message) error {
 	var event ledger.TransactionUpsertedEvent
 	if err := json.Unmarshal(message.Value, &event); err != nil {
-		return err
+		return kafkax.Permanent(err)
 	}
 
 	operationCtx, cancel := context.WithTimeout(ctx, s.requestTimeout)
@@ -423,7 +428,7 @@ func (s *service) handleTransactionMessage(ctx context.Context, message kafka.Me
 func (s *service) handleAlertMessage(ctx context.Context, message kafka.Message) error {
 	var alert rules.Alert
 	if err := json.Unmarshal(message.Value, &alert); err != nil {
-		return err
+		return kafkax.Permanent(err)
 	}
 
 	operationCtx, cancel := context.WithTimeout(ctx, s.requestTimeout)
@@ -435,61 +440,6 @@ func (s *service) handleAlertMessage(ctx context.Context, message kafka.Message)
 	}
 
 	s.logger.Info("alert projection written", "event_id", row.EventID, "user_id", row.UserID, "type", row.Type)
-	return nil
-}
-
-func ensureSchema(ctx context.Context, client *clickhousex.Client, database string) error {
-	qualifiedDatabase := sanitizeIdentifier(database)
-	transactionTableName := qualifiedTable(qualifiedDatabase, transactionEventsTable)
-	alertTableName := qualifiedTable(qualifiedDatabase, alertEventsTable)
-
-	queries := []string{
-		fmt.Sprintf("CREATE DATABASE IF NOT EXISTS %s", qualifiedDatabase),
-		fmt.Sprintf(`
-CREATE TABLE IF NOT EXISTS %s (
-    event_id String,
-    event_date Date,
-    user_id String,
-    category LowCardinality(String),
-    merchant String,
-    amount_cents Int64,
-    debit_cents UInt64,
-    credit_cents UInt64,
-    currency LowCardinality(String),
-    transaction_id String,
-    source_import_id String,
-    occurred_at DateTime64(3, 'UTC'),
-    recorded_at DateTime64(3, 'UTC')
-) ENGINE = ReplacingMergeTree(recorded_at)
-PARTITION BY toYYYYMM(event_date)
-ORDER BY (user_id, event_date, event_id)
-`, transactionTableName),
-		fmt.Sprintf(`
-CREATE TABLE IF NOT EXISTS %s (
-    event_id String,
-    event_date Date,
-    user_id String,
-    type LowCardinality(String),
-    severity LowCardinality(String),
-    category LowCardinality(String),
-    merchant String,
-    message String,
-    amount_cents Int64,
-    transaction_id String,
-    source_import_id String,
-    created_at DateTime64(3, 'UTC'),
-    recorded_at DateTime64(3, 'UTC')
-) ENGINE = ReplacingMergeTree(recorded_at)
-PARTITION BY toYYYYMM(event_date)
-ORDER BY (user_id, event_date, event_id)
-`, alertTableName),
-	}
-
-	for _, query := range queries {
-		if err := client.Exec(ctx, query); err != nil {
-			return err
-		}
-	}
 	return nil
 }
 

@@ -172,6 +172,7 @@ What it does now:
 - provides idempotent duplicate handling,
 - stores raw import metadata in MongoDB,
 - encrypts raw file content before storing it in MongoDB,
+- stores encryption metadata through `content_kid`,
 - publishes parse job to RabbitMQ,
 - publishes `statement.uploaded` to Kafka,
 - exposes import status retrieval,
@@ -188,7 +189,7 @@ Implemented in:
 What it does now:
 - consumes parse jobs asynchronously from RabbitMQ,
 - loads raw import from MongoDB,
-- decrypts encrypted raw content,
+- decrypts encrypted raw content through the current keyring and legacy keys when configured,
 - parses:
   - `CSV`
   - text-based `PDF`
@@ -211,13 +212,15 @@ What it does now:
 - loads parsed projection from MongoDB,
 - transforms parsed transactions into canonical ledger transactions,
 - writes transactions into PostgreSQL,
+- persists `transaction.upserted` outbox events in the same DB transaction as canonical writes,
+- quarantines permanently malformed Kafka messages instead of terminating the consumer,
 - deduplicates imported transactions by `user_id + source_import_id + fingerprint`,
 - exposes:
   - transaction listing,
   - manual transaction creation,
   - category listing,
   - recurring detection,
-- emits `transaction.upserted` to Kafka,
+- publishes `transaction.upserted` from a background outbox publisher,
 - enforces authenticated user context for HTTP access,
 - rejects client-supplied `user_id`, `id`, `fingerprint`, and other hidden storage fields,
 - requires `Idempotency-Key` for manual create path.
@@ -239,6 +242,7 @@ What it does now:
 - deduplicates repeated alerts inside active windows,
 - publishes `send.telegram` jobs to RabbitMQ,
 - publishes `alert.created` to Kafka,
+- quarantines permanently malformed Kafka messages instead of terminating the consumer,
 - already includes anti-spam tuning for statement imports.
 
 ### 4.7 notification-service
@@ -279,7 +283,7 @@ What it does now:
 - consumes:
   - `transaction.upserted`
   - `alert.created`
-- creates ClickHouse analytical tables on startup,
+- writes malformed Kafka payloads to quarantine topic instead of failing the service,
 - writes analytical projections,
 - exposes analytics endpoints for:
   - projections summary,
@@ -300,6 +304,7 @@ What it does now:
 - exposes WebSocket endpoint,
 - supports channel subscriptions,
 - fans out live dashboard, alert, and transaction updates,
+- quarantines permanently malformed Kafka messages instead of terminating the consumer,
 - stores presence and subscription state in Redis,
 - exposes presence/config endpoints.
 
@@ -395,21 +400,26 @@ Relevant code:
 
 Implemented now:
 - raw statement content is encrypted before storing in MongoDB,
+- encryption metadata is stored with `content_kid`,
+- current and legacy encryption keys are supported through keyring configuration,
+- one-shot maintenance command migrates legacy plaintext imports and scrubs historical `raw_line` leftovers,
 - parser decrypts raw content only for processing,
 - new parsed projections do not keep `raw_line`,
 - bot status responses no longer expose internal service URLs.
 
 Relevant code:
 - [internal/platform/cryptox/cryptox.go](../internal/platform/cryptox/cryptox.go)
+- [internal/platform/cryptox/keyring.go](../internal/platform/cryptox/keyring.go)
 - [cmd/ingest-service/main.go](../cmd/ingest-service/main.go)
 - [cmd/parser-service/main.go](../cmd/parser-service/main.go)
+- [cmd/sensitive-data-maintenance/main.go](../cmd/sensitive-data-maintenance/main.go)
 
 ### 6.3 Current Security Limits
 
 Not finished yet:
-- no transactional outbox for `ledger-service`,
 - categories are still global, not tenant-scoped,
-- old plaintext raw imports are not automatically migrated,
+- normalized financial data in PostgreSQL and ClickHouse is not field-encrypted,
+- encryption keys are still env-managed rather than backed by a dedicated secret/KMS policy,
 - startup still performs some schema/topic provisioning,
 - production-hardening of insecure defaults is not fully enforced.
 
@@ -432,6 +442,7 @@ Current raw import protection:
 - metadata is stored as plain document fields,
 - raw file bytes are stored encrypted in `content_enc`,
 - nonce is stored in `content_nnc`.
+- active encryption key id is stored in `content_kid`.
 
 ### 7.3 Redis
 
@@ -448,6 +459,7 @@ Currently used topics:
 - `statement.parsed`
 - `transaction.upserted`
 - `alert.created`
+- `event.quarantine`
 
 ### 7.5 RabbitMQ
 
@@ -504,6 +516,7 @@ Implemented local stack in:
 - [deploy/docker-compose.yml](../deploy/docker-compose.yml)
 
 Includes:
+- `migrate`
 - `postgres`
 - `redis`
 - `mongodb`
@@ -527,6 +540,8 @@ Documented in:
 ### 9.3 Runtime Foundation
 
 Implemented cross-cutting runtime pieces:
+- versioned migrations for PostgreSQL and ClickHouse,
+- one-shot sensitive-data maintenance,
 - startup retry/backoff,
 - graceful shutdown,
 - structured logging,
@@ -535,7 +550,10 @@ Implemented cross-cutting runtime pieces:
 - env loading.
 
 Relevant code:
+- [cmd/migrate/main.go](../cmd/migrate/main.go)
+- [cmd/sensitive-data-maintenance/main.go](../cmd/sensitive-data-maintenance/main.go)
 - [internal/platform/runtime/runtime.go](../internal/platform/runtime/runtime.go)
+- [internal/platform/migratex/migrate.go](../internal/platform/migratex/migrate.go)
 - [internal/platform/startupx/retry.go](../internal/platform/startupx/retry.go)
 - [internal/platform/logging/logger.go](../internal/platform/logging/logger.go)
 - [internal/platform/env/env.go](../internal/platform/env/env.go)
@@ -546,6 +564,7 @@ Relevant code:
 
 The repository already contains:
 - unit tests for parser, rules, auth, websocket, startup retry, env, crypto and security helpers,
+- unit tests for Kafka consumer quarantine/retry behavior,
 - service-level tests for gateway and ledger handlers,
 - integration tests through gateway for main runtime paths,
 - GitHub Actions CI baseline.
@@ -556,18 +575,24 @@ Relevant files:
 - [internal/parser/parser_test.go](../internal/parser/parser_test.go)
 - [internal/rules/engine_test.go](../internal/rules/engine_test.go)
 - [internal/platform/cryptox/cryptox_test.go](../internal/platform/cryptox/cryptox_test.go)
+- [internal/platform/kafkax/consumer_test.go](../internal/platform/kafkax/consumer_test.go)
 - [.github/workflows/ci.yml](../.github/workflows/ci.yml)
 
 ### 10.2 Runtime Verification Already Performed
 
 Runtime smoke already confirmed:
 - all services come up healthy in Docker,
+- schema can be created by one-shot `migrate` command before service startup,
+- one-shot `sensitive-data-maintenance` can migrate legacy plaintext raw imports and scrub historical raw fragments,
 - direct unauthenticated access to `ledger-service` is rejected,
 - gateway strips malicious `user_id` query overrides,
 - manual transaction create enforces strict contract,
 - repeated manual create with same idempotency key returns the same record,
 - import pipeline works end-to-end,
+- `ledger-service` publishes `transaction.upserted` through outbox and downstream analytics sees the event,
 - new raw imports are stored encrypted in MongoDB,
+- historical raw imports now store `content_kid` and no longer keep plaintext `content`,
+- malformed Kafka payloads are quarantined into `event.quarantine` while consumers remain healthy,
 - Telegram bot accepts files and returns parsing summary,
 - analytics and realtime path were previously validated,
 - Telegram outbound delivery works with real bot credentials.
@@ -585,8 +610,7 @@ Implemented, but still not final-grade:
 ## 12. What Is Not Implemented Yet
 
 Still out of current implementation:
-- transactional outbox,
-- migration of old plaintext sensitive data,
+- Kafka topic provisioning still lives in runtime startup path,
 - tenant-scoped categories,
 - OCR for scanned PDFs,
 - Google Calendar sync,
@@ -600,8 +624,8 @@ Still out of current implementation:
 
 The next technical steps should be:
 
-1. implement transactional outbox in `ledger-service`,
-2. migrate old plaintext Mongo records and old parsed raw fragments,
+1. remove Kafka topic provisioning from runtime startup path,
+2. add fail-fast handling for insecure defaults outside local development,
 3. split `system categories` from `user categories`,
 4. replace Telegram password login with safer link/code binding,
 5. add alert digesting and stronger anti-spam delivery policy.

@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -34,11 +36,20 @@ type service struct {
 	parsedCollection *mongo.Collection
 	kafkaReader      *kafka.Reader
 	kafkaWriter      *kafka.Writer
+	quarantineWriter *kafka.Writer
 	requestTimeout   time.Duration
 	processTimeout   time.Duration
 	defaultAccountID string
 	consumeTopic     string
 	publishTopic     string
+	consumerGroup    string
+	quarantineTopic  string
+	retryBackoff     time.Duration
+	maxAttempts      int
+	outboxBatchSize  int
+	outboxPollDelay  time.Duration
+	outboxClaimTTL   time.Duration
+	outboxOwner      string
 }
 
 type createTransactionRequest struct {
@@ -66,7 +77,15 @@ func main() {
 	consumeTopic := env.String("KAFKA_PARSED_TOPIC", "statement.parsed")
 	publishTopic := env.String("KAFKA_TRANSACTION_TOPIC", "transaction.upserted")
 	consumerGroup := env.String("KAFKA_CONSUMER_GROUP", "ledger-service")
+	quarantineTopic := env.String("KAFKA_QUARANTINE_TOPIC", "event.quarantine")
+	retryBackoff := env.Duration("KAFKA_CONSUMER_RETRY_BACKOFF", 2*time.Second)
+	maxAttempts := env.Int("KAFKA_CONSUMER_RETRY_MAX_ATTEMPTS", 3)
 	defaultAccountID := env.String("LEDGER_DEFAULT_ACCOUNT_ID", ledger.DefaultAccountID)
+	outboxBatchSize := env.Int("LEDGER_OUTBOX_BATCH_SIZE", 100)
+	outboxPollDelay := env.Duration("LEDGER_OUTBOX_POLL_DELAY", time.Second)
+	outboxClaimTTL := env.Duration("LEDGER_OUTBOX_CLAIM_TTL", 30*time.Second)
+	hostname, _ := os.Hostname()
+	outboxOwner := fmt.Sprintf("%s-%s-%d", serviceName, strings.TrimSpace(hostname), time.Now().UTC().UnixNano())
 
 	startupCtx, cancel := context.WithTimeout(context.Background(), startupTimeout)
 	defer cancel()
@@ -80,11 +99,6 @@ func main() {
 	defer postgresPool.Close()
 
 	repository := ledger.NewRepository(postgresPool)
-	if err := startupx.Retry(startupCtx, logger, "postgres ensure ledger schema", func(ctx context.Context) error {
-		return repository.EnsureSchema(ctx)
-	}); err != nil {
-		panic(err)
-	}
 
 	mongoClient, err := startupx.RetryValue(startupCtx, logger, "mongodb connect", func(ctx context.Context) (*mongo.Client, error) {
 		return mongox.Connect(ctx, mongoURI)
@@ -113,6 +127,11 @@ func main() {
 	}); err != nil {
 		panic(err)
 	}
+	if err := startupx.Retry(startupCtx, logger, "kafka ensure quarantine topic", func(ctx context.Context) error {
+		return kafkax.EnsureTopic(ctx, kafkaBrokers, quarantineTopic, 1, 1)
+	}); err != nil {
+		panic(err)
+	}
 
 	kafkaReader := kafka.NewReader(kafka.ReaderConfig{
 		Brokers:  kafkaBrokers,
@@ -128,6 +147,10 @@ func main() {
 	defer func() {
 		_ = kafkaWriter.Close()
 	}()
+	quarantineWriter := kafkax.NewWriter(kafkaBrokers, quarantineTopic)
+	defer func() {
+		_ = quarantineWriter.Close()
+	}()
 
 	svc := &service{
 		logger:           logger,
@@ -135,11 +158,20 @@ func main() {
 		parsedCollection: parsedCollection,
 		kafkaReader:      kafkaReader,
 		kafkaWriter:      kafkaWriter,
+		quarantineWriter: quarantineWriter,
 		requestTimeout:   requestTimeout,
 		processTimeout:   processTimeout,
 		defaultAccountID: defaultAccountID,
 		consumeTopic:     consumeTopic,
 		publishTopic:     publishTopic,
+		consumerGroup:    consumerGroup,
+		quarantineTopic:  quarantineTopic,
+		retryBackoff:     retryBackoff,
+		maxAttempts:      maxAttempts,
+		outboxBatchSize:  outboxBatchSize,
+		outboxPollDelay:  outboxPollDelay,
+		outboxClaimTTL:   outboxClaimTTL,
+		outboxOwner:      outboxOwner,
 	}
 
 	mux := http.NewServeMux()
@@ -156,6 +188,7 @@ func main() {
 		Logger:   logger,
 		Background: []runtime.BackgroundFunc{
 			svc.consumeParsedEvents,
+			svc.publishOutboxEvents,
 		},
 	}); err != nil {
 		panic(err)
@@ -216,13 +249,9 @@ func (s *service) handleCreateTransaction(w http.ResponseWriter, r *http.Request
 	}
 	transaction := ledgerManualTransactionFromRequest(userID, s.defaultAccountID, idempotencyKey, input)
 
-	stored, err := s.repository.UpsertTransaction(ctx, transaction)
+	stored, err := s.repository.UpsertTransactionWithOutbox(ctx, transaction, s.publishTopic)
 	if err != nil {
 		httpx.JSON(w, http.StatusInternalServerError, map[string]string{"error": "internal_error"})
-		return
-	}
-	if err := s.emitTransactionEvent(ctx, stored); err != nil {
-		httpx.JSON(w, http.StatusInternalServerError, map[string]string{"error": "event_publish_failed"})
 		return
 	}
 	httpx.JSON(w, http.StatusCreated, stored)
@@ -264,28 +293,22 @@ func (s *service) handleListRecurring(w http.ResponseWriter, r *http.Request) {
 
 func (s *service) consumeParsedEvents(ctx context.Context, logger *slog.Logger) error {
 	logger.Info("ledger parsed consumer ready", "topic", s.consumeTopic, "publish_topic", s.publishTopic)
-
-	for {
-		message, err := s.kafkaReader.FetchMessage(ctx)
-		if err != nil {
-			if errors.Is(err, context.Canceled) || ctx.Err() != nil {
-				return nil
-			}
-			return err
-		}
-		if err := s.handleParsedMessage(ctx, message); err != nil {
-			return err
-		}
-		if err := s.kafkaReader.CommitMessages(ctx, message); err != nil {
-			return err
-		}
-	}
+	return kafkax.ConsumeLoop(ctx, kafkax.ConsumerOptions{
+		Name:             "ledger-parsed-consumer",
+		Reader:           s.kafkaReader,
+		QuarantineWriter: s.quarantineWriter,
+		Handler:          s.handleParsedMessage,
+		Logger:           logger,
+		ConsumerGroup:    s.consumerGroup,
+		RetryBackoff:     s.retryBackoff,
+		MaxAttempts:      s.maxAttempts,
+	})
 }
 
 func (s *service) handleParsedMessage(ctx context.Context, message kafka.Message) error {
 	var event imports.StatementParsedEvent
 	if err := json.Unmarshal(message.Value, &event); err != nil {
-		return err
+		return kafkax.Permanent(err)
 	}
 
 	operationCtx, cancel := context.WithTimeout(ctx, s.processTimeout)
@@ -293,6 +316,9 @@ func (s *service) handleParsedMessage(ctx context.Context, message kafka.Message
 
 	parsedImport, err := s.findParsedImport(operationCtx, event.UserID, event.ImportID)
 	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return kafkax.Permanent(err)
+		}
 		return err
 	}
 
@@ -300,7 +326,7 @@ func (s *service) handleParsedMessage(ctx context.Context, message kafka.Message
 	for _, parsedTransaction := range parsedImport.Transactions {
 		resolvedUserID := strings.TrimSpace(parsedImport.UserID)
 		if resolvedUserID == "" {
-			return errors.New("parsed import has empty user_id")
+			return kafkax.Permanent(errors.New("parsed import has empty user_id"))
 		}
 		transactions = append(transactions, ledger.NewTransactionFromParsed(
 			resolvedUserID,
@@ -314,14 +340,9 @@ func (s *service) handleParsedMessage(ctx context.Context, message kafka.Message
 		return nil
 	}
 
-	stored, err := s.repository.UpsertTransactions(operationCtx, transactions)
+	stored, err := s.repository.UpsertTransactionsWithOutbox(operationCtx, transactions, s.publishTopic)
 	if err != nil {
 		return err
-	}
-	for _, transaction := range stored {
-		if err := s.emitTransactionEvent(operationCtx, transaction); err != nil {
-			return err
-		}
 	}
 
 	s.logger.Info("ledger import applied", "import_id", event.ImportID, "transactions", len(stored))
@@ -336,6 +357,73 @@ func (s *service) findParsedImport(ctx context.Context, userID, importID string)
 
 func (s *service) emitTransactionEvent(ctx context.Context, transaction ledger.Transaction) error {
 	return kafkax.PublishJSON(ctx, s.kafkaWriter, transaction.ID, ledger.NewTransactionUpsertedEvent(transaction))
+}
+
+func (s *service) publishOutboxEvents(ctx context.Context, logger *slog.Logger) error {
+	logger.Info("ledger outbox publisher ready", "topic", s.publishTopic, "owner", s.outboxOwner)
+
+	ticker := time.NewTicker(s.outboxPollDelay)
+	defer ticker.Stop()
+
+	for {
+		if err := s.publishOutboxBatch(ctx); err != nil {
+			logger.Error("ledger outbox batch failed", "error", err)
+		}
+
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+		}
+	}
+}
+
+func (s *service) publishOutboxBatch(ctx context.Context) error {
+	operationCtx, cancel := context.WithTimeout(ctx, s.processTimeout)
+	defer cancel()
+
+	events, err := s.repository.ClaimPendingOutboxEvents(operationCtx, s.outboxBatchSize, s.outboxOwner, s.outboxClaimTTL)
+	if err != nil {
+		return err
+	}
+	if len(events) == 0 {
+		return nil
+	}
+
+	for _, event := range events {
+		if err := s.publishClaimedOutboxEvent(ctx, event); err != nil {
+			s.logger.Error("ledger outbox publish failed", "event_id", event.ID, "event_type", event.EventType, "error", err)
+		}
+	}
+	return nil
+}
+
+func (s *service) publishClaimedOutboxEvent(ctx context.Context, event ledger.OutboxEvent) error {
+	publishCtx, cancel := context.WithTimeout(ctx, s.requestTimeout)
+	defer cancel()
+
+	if err := s.kafkaWriter.WriteMessages(publishCtx, kafka.Message{
+		Key:   []byte(event.MessageKey),
+		Value: []byte(event.Payload),
+		Time:  time.Now().UTC(),
+	}); err != nil {
+		releaseCtx, releaseCancel := context.WithTimeout(context.Background(), s.requestTimeout)
+		defer releaseCancel()
+		releaseErr := s.repository.ReleaseOutboxEventClaim(releaseCtx, event.ID, err.Error())
+		if releaseErr != nil {
+			s.logger.Error("failed to release outbox claim", "event_id", event.ID, "error", releaseErr)
+		}
+		return err
+	}
+
+	markCtx, markCancel := context.WithTimeout(context.Background(), s.requestTimeout)
+	defer markCancel()
+	if err := s.repository.MarkOutboxEventPublished(markCtx, event.ID); err != nil {
+		return err
+	}
+
+	s.logger.Info("ledger outbox event published", "event_id", event.ID, "event_type", event.EventType, "attempts", event.PublishAttempts)
+	return nil
 }
 
 func ledgerManualTransactionFromRequest(userID, defaultAccountID, idempotencyKey string, input createTransactionRequest) ledger.Transaction {

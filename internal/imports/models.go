@@ -18,6 +18,7 @@ type RawImport struct {
 	Content    []byte             `bson:"content,omitempty" json:"-"`
 	ContentEnc []byte             `bson:"content_enc,omitempty" json:"-"`
 	ContentNnc []byte             `bson:"content_nnc,omitempty" json:"-"`
+	ContentKID string             `bson:"content_kid,omitempty" json:"-"`
 	Status     string             `bson:"status" json:"status"`
 	ReceivedAt time.Time          `bson:"received_at" json:"received_at"`
 	UpdatedAt  time.Time          `bson:"updated_at" json:"updated_at"`

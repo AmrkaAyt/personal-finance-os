@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -31,16 +30,21 @@ var defaultBudgetLimits = map[string]int64{
 }
 
 type service struct {
-	logger         *slog.Logger
-	engine         *rules.Engine
-	kafkaReader    *kafka.Reader
-	kafkaWriter    *kafka.Writer
-	rabbitConn     *amqp.Connection
-	consumeTopic   string
-	publishQueue   string
-	alertTopic     string
-	requestTimeout time.Duration
-	config         rules.Config
+	logger           *slog.Logger
+	engine           *rules.Engine
+	kafkaReader      *kafka.Reader
+	kafkaWriter      *kafka.Writer
+	quarantineWriter *kafka.Writer
+	rabbitConn       *amqp.Connection
+	consumeTopic     string
+	publishQueue     string
+	alertTopic       string
+	consumerGroup    string
+	quarantineTopic  string
+	retryBackoff     time.Duration
+	maxAttempts      int
+	requestTimeout   time.Duration
+	config           rules.Config
 }
 
 func main() {
@@ -54,6 +58,9 @@ func main() {
 	alertTopic := env.String("KAFKA_ALERT_TOPIC", "alert.created")
 	kafkaBrokers := env.Strings("KAFKA_BROKERS", []string{"localhost:9092"})
 	consumerGroup := env.String("KAFKA_CONSUMER_GROUP", "rule-engine")
+	quarantineTopic := env.String("KAFKA_QUARANTINE_TOPIC", "event.quarantine")
+	retryBackoff := env.Duration("KAFKA_CONSUMER_RETRY_BACKOFF", 2*time.Second)
+	maxAttempts := env.Int("KAFKA_CONSUMER_RETRY_MAX_ATTEMPTS", 3)
 	publishQueue := env.String("RABBIT_NOTIFICATION_QUEUE", "send.telegram")
 	rabbitURL := env.String("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
 	budgetLimits := rules.ParseBudgetLimits(env.String("RULE_BUDGET_LIMITS", ""), defaultBudgetLimits)
@@ -107,6 +114,11 @@ func main() {
 	}); err != nil {
 		panic(err)
 	}
+	if err := startupx.Retry(startupCtx, logger, "kafka ensure quarantine topic", func(ctx context.Context) error {
+		return kafkax.EnsureTopic(ctx, kafkaBrokers, quarantineTopic, 1, 1)
+	}); err != nil {
+		panic(err)
+	}
 
 	var store rules.StateStore = rules.NewMemoryStore()
 	if redisAddr := env.String("REDIS_ADDR", ""); redisAddr != "" {
@@ -135,18 +147,27 @@ func main() {
 	defer func() {
 		_ = kafkaWriter.Close()
 	}()
+	quarantineWriter := kafkax.NewWriter(kafkaBrokers, quarantineTopic)
+	defer func() {
+		_ = quarantineWriter.Close()
+	}()
 
 	svc := &service{
-		logger:         logger,
-		engine:         engine,
-		kafkaReader:    kafkaReader,
-		kafkaWriter:    kafkaWriter,
-		rabbitConn:     rabbitConn,
-		consumeTopic:   consumeTopic,
-		publishQueue:   publishQueue,
-		alertTopic:     alertTopic,
-		requestTimeout: requestTimeout,
-		config:         cfg,
+		logger:           logger,
+		engine:           engine,
+		kafkaReader:      kafkaReader,
+		kafkaWriter:      kafkaWriter,
+		quarantineWriter: quarantineWriter,
+		rabbitConn:       rabbitConn,
+		consumeTopic:     consumeTopic,
+		publishQueue:     publishQueue,
+		alertTopic:       alertTopic,
+		consumerGroup:    consumerGroup,
+		quarantineTopic:  quarantineTopic,
+		retryBackoff:     retryBackoff,
+		maxAttempts:      maxAttempts,
+		requestTimeout:   requestTimeout,
+		config:           cfg,
 	}
 
 	mux := http.NewServeMux()
@@ -187,33 +208,29 @@ func (s *service) handleConfig(w http.ResponseWriter, _ *http.Request) {
 		"notify_imported_large_transactions": s.config.NotifyImportedLargeTransactions,
 		"notify_imported_new_merchants":      s.config.NotifyImportedNewMerchants,
 		"alert_topic":                        s.alertTopic,
+		"quarantine_topic":                   s.quarantineTopic,
 		"notification_queue":                 s.publishQueue,
 	})
 }
 
 func (s *service) consumeTransactions(ctx context.Context, logger *slog.Logger) error {
 	logger.Info("rule engine ready", "consume_topic", s.consumeTopic, "publish_queue", s.publishQueue, "alert_topic", s.alertTopic)
-	for {
-		message, err := s.kafkaReader.FetchMessage(ctx)
-		if err != nil {
-			if errors.Is(err, context.Canceled) || ctx.Err() != nil {
-				return nil
-			}
-			return err
-		}
-		if err := s.handleTransactionMessage(ctx, message); err != nil {
-			return err
-		}
-		if err := s.kafkaReader.CommitMessages(ctx, message); err != nil {
-			return err
-		}
-	}
+	return kafkax.ConsumeLoop(ctx, kafkax.ConsumerOptions{
+		Name:             "rule-engine-consumer",
+		Reader:           s.kafkaReader,
+		QuarantineWriter: s.quarantineWriter,
+		Handler:          s.handleTransactionMessage,
+		Logger:           logger,
+		ConsumerGroup:    s.consumerGroup,
+		RetryBackoff:     s.retryBackoff,
+		MaxAttempts:      s.maxAttempts,
+	})
 }
 
 func (s *service) handleTransactionMessage(ctx context.Context, message kafka.Message) error {
 	var event ledger.TransactionUpsertedEvent
 	if err := json.Unmarshal(message.Value, &event); err != nil {
-		return err
+		return kafkax.Permanent(err)
 	}
 
 	operationCtx, cancel := context.WithTimeout(ctx, s.requestTimeout)
