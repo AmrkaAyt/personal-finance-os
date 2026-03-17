@@ -36,6 +36,10 @@ func Middleware(manager *Manager, required bool) func(http.Handler) http.Handler
 				httpx.JSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid token"})
 				return
 			}
+			if claims.Type != "access" {
+				httpx.JSON(w, http.StatusUnauthorized, map[string]string{"error": "token is not an access token"})
+				return
+			}
 
 			ctx := context.WithValue(r.Context(), claimsKey, claims)
 			next.ServeHTTP(w, r.WithContext(ctx))

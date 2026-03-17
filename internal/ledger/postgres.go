@@ -2,7 +2,9 @@ package ledger
 
 import (
 	"context"
+	"errors"
 	"slices"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -37,14 +39,15 @@ CREATE TABLE IF NOT EXISTS transactions (
     occurred_at timestamptz NOT NULL,
     raw_line text NOT NULL DEFAULT '',
     created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT transactions_source_fingerprint_key UNIQUE (source_import_id, fingerprint)
+    updated_at timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS idx_transactions_user_occurred_at ON transactions (user_id, occurred_at DESC);
 CREATE INDEX IF NOT EXISTS idx_transactions_account_occurred_at ON transactions (account_id, occurred_at DESC);
 CREATE INDEX IF NOT EXISTS idx_transactions_source_import_id ON transactions (source_import_id);
 CREATE INDEX IF NOT EXISTS idx_transactions_merchant_occurred_at ON transactions (merchant, occurred_at DESC);
+ALTER TABLE transactions DROP CONSTRAINT IF EXISTS transactions_source_fingerprint_key;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_transactions_user_source_fingerprint ON transactions (user_id, source_import_id, fingerprint);
 `
 	if _, err := r.pool.Exec(ctx, schema); err != nil {
 		return err
@@ -81,9 +84,17 @@ func (r *Repository) UpsertTransactions(ctx context.Context, transactions []Tran
 		return nil, nil
 	}
 
-	batch := &pgx.Batch{}
+	stored := make([]Transaction, 0, len(transactions))
 	for _, transaction := range transactions {
-		batch.Queue(`
+		existingID, err := r.findTransactionID(ctx, transaction.UserID, transaction.SourceImportID, transaction.Fingerprint)
+		if err != nil {
+			return nil, err
+		}
+		if existingID != "" {
+			transaction.ID = existingID
+		}
+
+		row := r.pool.QueryRow(ctx, `
 INSERT INTO transactions (
     id,
     user_id,
@@ -99,9 +110,11 @@ INSERT INTO transactions (
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
 )
-ON CONFLICT (source_import_id, fingerprint) DO UPDATE SET
+ON CONFLICT (id) DO UPDATE SET
     user_id = EXCLUDED.user_id,
     account_id = EXCLUDED.account_id,
+    source_import_id = EXCLUDED.source_import_id,
+    fingerprint = EXCLUDED.fingerprint,
     merchant = EXCLUDED.merchant,
     category = EXCLUDED.category,
     amount_cents = EXCLUDED.amount_cents,
@@ -123,34 +136,25 @@ RETURNING id, user_id, account_id, source_import_id, fingerprint, merchant, cate
 			transaction.OccurredAt,
 			transaction.RawLine,
 		)
-	}
 
-	results := r.pool.SendBatch(ctx, batch)
-
-	stored := make([]Transaction, 0, len(transactions))
-	for range transactions {
-		var transaction Transaction
-		if err := results.QueryRow().Scan(
-			&transaction.ID,
-			&transaction.UserID,
-			&transaction.AccountID,
-			&transaction.SourceImportID,
-			&transaction.Fingerprint,
-			&transaction.Merchant,
-			&transaction.Category,
-			&transaction.AmountCents,
-			&transaction.Currency,
-			&transaction.OccurredAt,
-			&transaction.RawLine,
-			&transaction.CreatedAt,
+		var storedTransaction Transaction
+		if err := row.Scan(
+			&storedTransaction.ID,
+			&storedTransaction.UserID,
+			&storedTransaction.AccountID,
+			&storedTransaction.SourceImportID,
+			&storedTransaction.Fingerprint,
+			&storedTransaction.Merchant,
+			&storedTransaction.Category,
+			&storedTransaction.AmountCents,
+			&storedTransaction.Currency,
+			&storedTransaction.OccurredAt,
+			&storedTransaction.RawLine,
+			&storedTransaction.CreatedAt,
 		); err != nil {
-			_ = results.Close()
 			return nil, err
 		}
-		stored = append(stored, transaction)
-	}
-	if err := results.Close(); err != nil {
-		return nil, err
+		stored = append(stored, storedTransaction)
 	}
 	if err := r.ensureCategories(ctx, stored); err != nil {
 		return nil, err
@@ -158,9 +162,43 @@ RETURNING id, user_id, account_id, source_import_id, fingerprint, merchant, cate
 	return stored, nil
 }
 
-func (r *Repository) ListTransactions(ctx context.Context, limit int) ([]Transaction, error) {
+func (r *Repository) findTransactionID(ctx context.Context, userID, sourceImportID, fingerprint string) (string, error) {
+	var id string
+	err := r.pool.QueryRow(ctx, `
+SELECT id
+FROM transactions
+WHERE user_id = $1 AND source_import_id = $2 AND fingerprint = $3
+`,
+		userID,
+		sourceImportID,
+		fingerprint,
+	).Scan(&id)
+	if err == nil {
+		return id, nil
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return "", err
+}
+
+func (r *Repository) ListTransactions(ctx context.Context, userID string, limit int) ([]Transaction, error) {
 	if limit <= 0 {
 		limit = 200
+	}
+	if strings.TrimSpace(userID) != "" {
+		rows, err := r.pool.Query(ctx, `
+SELECT id, user_id, account_id, source_import_id, fingerprint, merchant, category, amount_cents, currency, occurred_at, raw_line, created_at
+FROM transactions
+WHERE user_id = $1
+ORDER BY occurred_at DESC, created_at DESC
+LIMIT $2
+`, userID, limit)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		return scanTransactions(rows, limit)
 	}
 
 	rows, err := r.pool.Query(ctx, `
@@ -173,6 +211,11 @@ LIMIT $1
 		return nil, err
 	}
 	defer rows.Close()
+
+	return scanTransactions(rows, limit)
+}
+
+func scanTransactions(rows pgx.Rows, limit int) ([]Transaction, error) {
 
 	transactions := make([]Transaction, 0, limit)
 	for rows.Next() {

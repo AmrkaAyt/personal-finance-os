@@ -31,6 +31,9 @@ type Result struct {
 }
 
 func ParseStatement(filename string, payload []byte) Result {
+	if looksLikePDF(filename, payload) {
+		return parsePDF(payload)
+	}
 	if looksLikeCSV(filename, payload) {
 		return parseCSV(payload)
 	}
@@ -48,6 +51,11 @@ func looksLikeCSV(filename string, payload []byte) bool {
 		return true
 	}
 	return bytes.Count(payload, []byte(",")) >= 2
+}
+
+func looksLikePDF(filename string, payload []byte) bool {
+	name := strings.ToLower(strings.TrimSpace(filename))
+	return strings.HasSuffix(name, ".pdf") || bytes.HasPrefix(payload, []byte("%PDF-"))
 }
 
 func parseCSV(payload []byte) Result {
@@ -154,6 +162,7 @@ func recordToTransaction(columns []string, record []string) Transaction {
 	if transaction.Merchant == "" {
 		transaction.Merchant = NormalizeMerchant(transaction.RawLine)
 	}
+	transaction.Category = CategorizeTransaction(transaction.Category, transaction.Merchant, "", "", transaction.RawLine, transaction.AmountCents)
 	return transaction
 }
 

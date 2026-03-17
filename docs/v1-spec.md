@@ -1,8 +1,8 @@
 # Personal Finance OS V1 Specification
 
-Version: 0.1.0  
-Date: 2026-03-15  
-Status: Draft / baseline for implementation
+Version: 0.2.0  
+Date: 2026-03-16  
+Status: Implemented V1 baseline / ready for Telegram wiring
 
 ## 1. Purpose
 
@@ -17,7 +17,7 @@ The goal of V1 is to deliver a real, usable backend platform that:
 - produces analytical projections.
 
 V1 is intentionally focused on the core financial operations layer.
-It does not include advanced investment, broker aggregation, Google Calendar sync, or Telegram command workflows beyond basic outbound notifications.
+It does not include advanced investment, broker aggregation, Google Calendar sync, or advanced Telegram planning workflows beyond basic commands, document intake, and outbound notifications.
 Cross-cutting contracts for documentation governance, domain semantics, and architecture boundaries are defined in [master-spec.md](master-spec.md), [domain-spec.md](domain-spec.md), and [product-architecture-spec.md](product-architecture-spec.md).
 
 ## 2. Product Goal
@@ -69,11 +69,11 @@ The following items are explicitly deferred to V2/V3:
 ### 3.3 Supported Import Matrix and Limits
 
 Committed V1 sources:
-- `CSV` statements only
+- `CSV` statements
+- text-based `PDF` statements
 
 V1 limits:
-- max file size `5 MB`
-- max parsed rows per file `50,000`
+- max file size `10 MB`
 - unsupported formats must be rejected explicitly
 
 ## 4. Product Users and Roles
@@ -97,7 +97,7 @@ V1 limits:
 ### 4.4 V1 Tenancy Boundary
 - V1 tenancy is strictly `user-centric`.
 - Household-owned resources and household sharing flows are out of scope.
-- Telegram in V1 is an outbound delivery channel only, not a command surface or identity source.
+- Telegram in V1 is a limited command and document-ingest surface, but not a primary identity source.
 
 ### 4.5 V1 Obligation Semantics
 - V1 obligation control is delivered through recurring-charge detection plus explainable alerts and reminders.
@@ -154,15 +154,15 @@ V1 limits:
 
 | Service | Responsibility | Protocols | Storage / Brokers | V1 Status |
 | --- | --- | --- | --- | --- |
-| `api-gateway` | External entrypoint, routing, auth middleware, WebSocket entrypoint | REST, WebSocket | JWT manager | scaffold |
-| `auth-service` | Login, refresh, RBAC claims, seeded identity resolution, Redis-backed refresh sessions | REST | seeded config, Redis | partially implemented |
+| `api-gateway` | External entrypoint, routing, auth middleware, WebSocket entrypoint | REST, WebSocket | JWT manager | implemented |
+| `auth-service` | Login, refresh, RBAC claims, seeded identity resolution, Redis-backed refresh sessions | REST | seeded config, Redis | implemented |
 | `ingest-service` | Raw file import, dedup, MongoDB storage, Rabbit publish, Kafka publish | REST | MongoDB, RabbitMQ, Kafka | implemented |
 | `parser-service` | Async parse consumer, normalization, parsed projection, Kafka publish | RabbitMQ, REST | MongoDB, Kafka | implemented |
-| `ledger-service` | Transactions, categories, recurring detection, query API | REST | PostgreSQL | scaffold |
-| `rule-engine` | Consume transaction events, detect overspend/anomalies, persist rule hits, publish notification jobs | Kafka, RabbitMQ | PostgreSQL, RabbitMQ | scaffold |
-| `notification-service` | Telegram delivery, retry policy, DLQ handling | RabbitMQ | Redis optional | scaffold |
-| `analytics-writer` | Consume domain events and write analytical projections | Kafka | ClickHouse | scaffold |
-| `realtime-gateway` | WebSocket sessions, presence, live dashboard fan-out | WebSocket | Redis | scaffold |
+| `ledger-service` | Transactions, categories, recurring detection, query API | REST | PostgreSQL | implemented |
+| `rule-engine` | Consume transaction events, detect overspend/anomalies, persist rule hits, publish notification jobs | Kafka, RabbitMQ | Redis, RabbitMQ, Kafka | implemented |
+| `notification-service` | Telegram delivery, retry policy, DLQ handling, polling commands, document intake forwarding | RabbitMQ, Telegram Bot API | RabbitMQ, Telegram API | implemented |
+| `analytics-writer` | Consume domain events and write analytical projections | Kafka | ClickHouse | implemented |
+| `realtime-gateway` | WebSocket sessions, presence, live dashboard fan-out | WebSocket | Redis | implemented |
 
 V1 budget semantics may remain co-located in ledger and rule flows until a dedicated `budget-service` is extracted.
 
@@ -356,9 +356,9 @@ sequenceDiagram
 - `FR-ING-004`: raw import must be stored in MongoDB.
 - `FR-ING-005`: parse job must be enqueued in RabbitMQ.
 - `FR-ING-006`: upload event must be emitted to Kafka.
-- `FR-ING-007`: V1 must accept `CSV` statements only.
-- `FR-ING-008`: uploads larger than `5 MB` must be rejected.
-- `FR-ING-009`: files exceeding `50,000` parsed rows must be rejected or marked unsupported.
+- `FR-ING-007`: V1 must accept `CSV` and text-based `PDF` statements.
+- `FR-ING-008`: uploads larger than `10 MB` must be rejected.
+- `FR-ING-009`: unsupported or unreadable statement formats must be rejected explicitly or marked unreadable without producing synthetic transactions.
 - `FR-PAR-001`: parser must consume parse jobs asynchronously.
 - `FR-PAR-002`: parser must store normalized parsed projection in MongoDB.
 - `FR-PAR-003`: parser must emit `statement.parsed` to Kafka.
@@ -386,6 +386,8 @@ sequenceDiagram
 - `FR-NOTIF-001`: notification service must consume RabbitMQ jobs.
 - `FR-NOTIF-002`: notification service must retry failed Telegram deliveries.
 - `FR-NOTIF-003`: failed messages after retry exhaustion must be routed to DLQ.
+- `FR-NOTIF-004`: notification service must support basic Telegram polling commands for status and reporting.
+- `FR-NOTIF-005`: notification service must accept Telegram document uploads and forward supported files to ingest-service.
 
 ### 11.6 Realtime and Analytics
 
@@ -717,7 +719,7 @@ Required integration flows:
 ### 19.3 End-to-End Smoke Test
 
 Mandatory V1 smoke flow:
-1. upload `examples/sample-statement.csv`,
+1. upload `examples/sample-statement.csv` or a supported text-based PDF statement,
 2. verify raw import status,
 3. verify parsed projection,
 4. verify transactions exist in ledger,
@@ -781,53 +783,55 @@ V1 is accepted when:
 - realtime gateway can deliver at least one live dashboard event,
 - repository passes unit and integration checks in CI.
 
-### 21.2 Implementation Baseline as of 2026-03-15
+### 21.2 Implementation Baseline as of 2026-03-16
 
 Already working:
 - Docker Compose infrastructure,
+- startup retry/backoff for Redis, MongoDB, RabbitMQ, Kafka, PostgreSQL, and ClickHouse initialization,
 - `ingest-service` with MongoDB + RabbitMQ + Kafka,
 - `parser-service` with RabbitMQ + MongoDB + Kafka,
+- `ledger-service` with PostgreSQL + Kafka + MongoDB lookup,
+- `rule-engine` with Kafka + RabbitMQ + Redis-backed rule state,
+- `notification-service` with RabbitMQ worker, retry, DLQ, Telegram delivery, basic polling commands, and Telegram document intake,
+- `analytics-writer` with Kafka consumers and ClickHouse projections for spend and alerts,
+- `realtime-gateway` with Kafka consumers, WebSocket fan-out, and Redis-backed presence/subscriptions,
+- `auth-service` with JWT pair issuance, refresh rotation, and Redis-backed sessions,
+- `api-gateway` with JWT-protected reverse proxy routing and WebSocket entrypoint,
 - idempotent duplicate import recovery,
+- gateway-level integration tests for `login -> import -> parse` and `login -> transaction -> analytics/alerts`,
 - OpenAPI baseline,
-- auth/ledger/realtime/rule/notification/analytics service scaffolds,
 - structured logging and graceful shutdown foundation.
 
 Not completed yet:
-- PostgreSQL-backed ledger,
-- Kafka consumer in ledger,
-- production-ready rule engine,
-- Telegram sender integration,
-- ClickHouse writer,
-- Redis-backed realtime presence flow,
-- API gateway routing to all downstream services.
+- production-grade Telegram user binding and multi-user chat routing,
+- OCR for scanned PDF statements.
 
 ## 22. Delivery Plan for V1
 
 ### Stage 1
-- stabilize auth-service,
-- wire api-gateway to auth, ingest, parser, ledger,
-- finalize OpenAPI for current endpoints.
+- finalize OpenAPI for current endpoints,
+- add integration tests for gateway auth and downstream routing.
 
 ### Stage 2
-- implement PostgreSQL-backed ledger,
-- consume `statement.parsed`,
-- emit `transaction.upserted`.
+- complete ledger validation and end-to-end smoke coverage,
+- emit `transaction.upserted`,
+- stabilize operational runbook for the import-to-ledger path.
 
 ### Stage 3
-- implement rule-engine,
-- implement notification-service with retry and DLQ,
-- emit and deliver alert flows.
+- validate alert generation end-to-end,
+- validate alert fan-out into analytics and realtime consumers,
+- add integration coverage for retries and DLQ.
 
 ### Stage 4
-- implement analytics writer and ClickHouse projections,
-- implement realtime gateway with Redis presence,
-- add integration tests and GitHub Actions coverage.
+- integrate a real Telegram bot token and chat routing,
+- validate real outbound delivery against Telegram Bot API,
+- add operator runbook for secret rotation and delivery troubleshooting.
 
 ## 23. Deferred Backlog
 
 Deferred after V1:
 - budgeting UI,
-- Telegram command workflows,
+- advanced Telegram command workflows,
 - Google Calendar integration,
 - broker aggregation,
 - portfolio analytics,

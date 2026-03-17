@@ -76,10 +76,18 @@ func NewRedisSessionStore(client *redis.Client, prefix string) *RedisSessionStor
 	return &RedisSessionStore{client: client, prefix: prefix}
 }
 
-func (s *Service) Login(ctx context.Context, username, password string) (jwtx.TokenPair, error) {
+func (s *Service) Authenticate(_ context.Context, username, password string) (User, error) {
 	user, ok := s.users[username]
 	if !ok || user.Password != password {
-		return jwtx.TokenPair{}, ErrInvalidCredentials
+		return User{}, ErrInvalidCredentials
+	}
+	return user, nil
+}
+
+func (s *Service) Login(ctx context.Context, username, password string) (jwtx.TokenPair, error) {
+	user, err := s.Authenticate(ctx, username, password)
+	if err != nil {
+		return jwtx.TokenPair{}, err
 	}
 	pair, refreshTokenID, err := s.tokens.IssuePair(user.ID, user.Roles)
 	if err != nil {

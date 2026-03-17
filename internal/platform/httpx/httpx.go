@@ -3,6 +3,7 @@ package httpx
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 )
 
@@ -30,5 +31,13 @@ func JSON(w http.ResponseWriter, status int, payload any) {
 
 func ReadJSON(r *http.Request, payload any) error {
 	defer r.Body.Close()
-	return json.NewDecoder(r.Body).Decode(payload)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(payload); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return fmt.Errorf("unexpected trailing json payload")
+	}
+	return nil
 }

@@ -10,11 +10,14 @@ import (
 
 type RawImport struct {
 	ID         primitive.ObjectID `bson:"_id,omitempty" json:"id"`
+	UserID     string             `bson:"user_id" json:"user_id"`
 	ImportID   string             `bson:"import_id" json:"import_id"`
 	Filename   string             `bson:"filename" json:"filename"`
 	SHA256     string             `bson:"sha256" json:"sha256"`
 	SizeBytes  int                `bson:"size_bytes" json:"size_bytes"`
-	Content    []byte             `bson:"content" json:"-"`
+	Content    []byte             `bson:"content,omitempty" json:"-"`
+	ContentEnc []byte             `bson:"content_enc,omitempty" json:"-"`
+	ContentNnc []byte             `bson:"content_nnc,omitempty" json:"-"`
 	Status     string             `bson:"status" json:"status"`
 	ReceivedAt time.Time          `bson:"received_at" json:"received_at"`
 	UpdatedAt  time.Time          `bson:"updated_at" json:"updated_at"`
@@ -22,6 +25,7 @@ type RawImport struct {
 
 type ParsedImport struct {
 	ID           primitive.ObjectID         `bson:"_id,omitempty" json:"id"`
+	UserID       string                     `bson:"user_id" json:"user_id"`
 	ImportID     string                     `bson:"import_id" json:"import_id"`
 	Filename     string                     `bson:"filename" json:"filename"`
 	Status       string                     `bson:"status" json:"status"`
@@ -32,6 +36,7 @@ type ParsedImport struct {
 }
 
 type ParseJob struct {
+	UserID     string    `json:"user_id"`
 	ImportID   string    `json:"import_id"`
 	Filename   string    `json:"filename"`
 	SHA256     string    `json:"sha256"`
@@ -40,6 +45,7 @@ type ParseJob struct {
 }
 
 type StatementUploadedEvent struct {
+	UserID     string    `json:"user_id"`
 	ImportID   string    `json:"import_id"`
 	Filename   string    `json:"filename"`
 	SHA256     string    `json:"sha256"`
@@ -49,6 +55,7 @@ type StatementUploadedEvent struct {
 }
 
 type StatementParsedEvent struct {
+	UserID           string    `json:"user_id"`
 	ImportID         string    `json:"import_id"`
 	Filename         string    `json:"filename"`
 	Status           string    `json:"status"`

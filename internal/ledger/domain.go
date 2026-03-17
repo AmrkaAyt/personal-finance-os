@@ -17,13 +17,19 @@ const (
 )
 
 var DefaultCategories = []string{
+	"fees",
 	"food",
 	"groceries",
+	"healthcare",
 	"housing",
 	"income",
+	"pending",
 	"subscriptions",
+	"transfers",
 	"transport",
+	"travel",
 	"uncategorized",
+	"utilities",
 }
 
 type Transaction struct {
@@ -70,7 +76,6 @@ func TransactionFingerprintFromLedger(transaction Transaction) string {
 		normalizeCurrency(transaction.Currency),
 		strconv.FormatInt(transaction.AmountCents, 10),
 		transaction.OccurredAt.UTC().Format(time.RFC3339Nano),
-		strings.TrimSpace(transaction.RawLine),
 	}, "|")))
 	return hex.EncodeToString(sum[:])
 }
@@ -81,10 +86,11 @@ func NewTransactionFromParsed(userID, accountID, importID string, transaction pa
 		occurredAt = transaction.OccurredAt.UTC()
 	}
 
+	resolvedUserID := firstNonEmpty(userID, DefaultUserID)
 	fingerprint := TransactionFingerprint(importID, transaction)
 	return Transaction{
-		ID:             buildTransactionID(fingerprint),
-		UserID:         firstNonEmpty(userID, DefaultUserID),
+		ID:             TransactionID(resolvedUserID, fingerprint),
+		UserID:         resolvedUserID,
 		AccountID:      firstNonEmpty(accountID, DefaultAccountID),
 		SourceImportID: importID,
 		Fingerprint:    fingerprint,
@@ -124,7 +130,14 @@ func TransactionFingerprint(importID string, transaction parserdomain.Transactio
 		normalizeCurrency(transaction.Currency),
 		strconv.FormatInt(transaction.AmountCents, 10),
 		occurredAt,
-		strings.TrimSpace(transaction.RawLine),
+	}, "|")))
+	return hex.EncodeToString(sum[:])
+}
+
+func ManualTransactionFingerprint(userID, idempotencyKey string) string {
+	sum := sha256.Sum256([]byte(strings.Join([]string{
+		strings.TrimSpace(userID),
+		strings.TrimSpace(idempotencyKey),
 	}, "|")))
 	return hex.EncodeToString(sum[:])
 }
@@ -175,11 +188,16 @@ func DetectRecurring(transactions []Transaction) []RecurringPattern {
 	return patterns
 }
 
-func buildTransactionID(fingerprint string) string {
-	if len(fingerprint) > 24 {
-		return "txn-" + fingerprint[:24]
+func TransactionID(userID, fingerprint string) string {
+	sum := sha256.Sum256([]byte(strings.Join([]string{
+		strings.TrimSpace(userID),
+		strings.TrimSpace(fingerprint),
+	}, "|")))
+	encoded := hex.EncodeToString(sum[:])
+	if len(encoded) > 24 {
+		return "txn-" + encoded[:24]
 	}
-	return "txn-" + fingerprint
+	return "txn-" + encoded
 }
 
 func normalizeText(value string) string {

@@ -13,7 +13,40 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.24.0'
+      - name: Prepare env file
+        run: cp .env.example .env
       - name: Run tests
         run: go test ./...
       - name: Build services
         run: go build ./...
+
+  integration:
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.0'
+      - name: Prepare env file
+        run: cp .env.example .env
+      - name: Start V1 stack
+        run: docker compose -f deploy/docker-compose.yml up -d --build
+      - name: Wait for gateway
+        run: |
+          for i in {1..30}; do
+            curl -fsS http://localhost:8080/healthz >/dev/null && exit 0
+            sleep 5
+          done
+          exit 1
+      - name: Run integration tests
+        env:
+          INTEGRATION_TESTS: '1'
+          INTEGRATION_BASE_URL: http://localhost:8080
+        run: go test -tags=integration ./tests/integration/...
+      - name: Dump compose logs on failure
+        if: failure()
+        run: docker compose -f deploy/docker-compose.yml logs --tail=200
+      - name: Stop V1 stack
+        if: always()
+        run: docker compose -f deploy/docker-compose.yml down -v

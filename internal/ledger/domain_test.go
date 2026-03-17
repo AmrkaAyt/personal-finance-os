@@ -54,3 +54,25 @@ func TestNewTransactionFromParsedIsStable(t *testing.T) {
 		t.Fatalf("expected normalized currency, got %s", first.Currency)
 	}
 }
+
+func TestNewTransactionFromParsedUsesUserScopedID(t *testing.T) {
+	occurredAt := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	parsed := parserdomain.Transaction{
+		Merchant:    "netflix",
+		Category:    "subscriptions",
+		Currency:    "usd",
+		AmountCents: 1599,
+		OccurredAt:  &occurredAt,
+		RawLine:     "Netflix,15.99,USD,2026-03-01,subscriptions",
+	}
+
+	first := NewTransactionFromParsed("user-a", "checking", "import-1", parsed)
+	second := NewTransactionFromParsed("user-b", "checking", "import-1", parsed)
+
+	if first.Fingerprint != second.Fingerprint {
+		t.Fatalf("expected same fingerprint for same source transaction, got %s and %s", first.Fingerprint, second.Fingerprint)
+	}
+	if first.ID == second.ID {
+		t.Fatalf("expected different transaction ids for different users, got %s", first.ID)
+	}
+}

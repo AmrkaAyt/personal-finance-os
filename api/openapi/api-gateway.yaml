@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Personal Finance OS API Gateway
-  version: 0.2.0
+  version: 0.4.0
 servers:
   - url: http://localhost:8080
 paths:
@@ -13,7 +13,7 @@ paths:
           description: Gateway is ready
   /api/v1/profile:
     get:
-      summary: Get current authenticated profile
+      summary: Get current authenticated profile from JWT claims
       security:
         - bearerAuth: []
       responses:
@@ -47,9 +47,23 @@ paths:
       responses:
         '200':
           description: Refreshed JWT pair
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenPair'
+  /auth/me:
+    get:
+      summary: Inspect current subject through auth-service
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Current authenticated subject
   /imports/raw:
     post:
       summary: Upload a raw statement import into MongoDB and enqueue parse work
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -66,6 +80,8 @@ paths:
   /imports/{import_id}:
     get:
       summary: Get raw import status from MongoDB
+      security:
+        - bearerAuth: []
       parameters:
         - in: path
           name: import_id
@@ -78,6 +94,8 @@ paths:
   /parser/results/{import_id}:
     get:
       summary: Get parsed import projection from MongoDB
+      security:
+        - bearerAuth: []
       parameters:
         - in: path
           name: import_id
@@ -90,11 +108,15 @@ paths:
   /api/v1/transactions:
     get:
       summary: List transactions from the ledger service
+      security:
+        - bearerAuth: []
       responses:
         '200':
           description: Transactions list
     post:
       summary: Store a transaction in the ledger service
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -104,12 +126,161 @@ paths:
       responses:
         '201':
           description: Transaction created
+  /api/v1/categories:
+    get:
+      summary: List ledger categories
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Categories list
   /api/v1/recurring:
     get:
       summary: Detect recurring transactions from the current ledger slice
+      security:
+        - bearerAuth: []
       responses:
         '200':
           description: Recurring patterns
+  /api/v1/notifications/status:
+    get:
+      summary: Inspect notification worker status and Telegram configuration
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Notification worker status
+  /api/v1/notifications/telegram/demo:
+    post:
+      summary: Queue a demo Telegram notification job
+      security:
+        - bearerAuth: []
+      responses:
+        '202':
+          description: Demo notification queued
+  /api/v1/notifications/telegram/poll/once:
+    post:
+      summary: Trigger one Telegram polling cycle
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Telegram polling cycle completed
+  /api/v1/analytics/projections:
+    get:
+      summary: Inspect analytics projection metadata
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Analytics projection metadata
+  /api/v1/analytics/projections/daily-spend:
+    get:
+      summary: Query daily spend projections
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: user_id
+          schema:
+            type: string
+        - in: query
+          name: from
+          schema:
+            type: string
+            format: date
+        - in: query
+          name: to
+          schema:
+            type: string
+            format: date
+        - in: query
+          name: category
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Daily spend projection
+  /api/v1/analytics/projections/alerts:
+    get:
+      summary: Query alert projections
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: user_id
+          schema:
+            type: string
+        - in: query
+          name: from
+          schema:
+            type: string
+            format: date
+        - in: query
+          name: to
+          schema:
+            type: string
+            format: date
+        - in: query
+          name: severity
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Alert projection
+  /api/v1/analytics/projections/summary:
+    get:
+      summary: Query summary analytics projection
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: user_id
+          schema:
+            type: string
+        - in: query
+          name: from
+          schema:
+            type: string
+            format: date
+        - in: query
+          name: to
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Summary projection
+  /api/v1/presence:
+    get:
+      summary: Inspect realtime presence state
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: user_id
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Presence snapshot
+  /api/v1/realtime/config:
+    get:
+      summary: Inspect realtime gateway configuration
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Realtime gateway configuration
+  /ws:
+    get:
+      summary: WebSocket entrypoint proxied to realtime-gateway
+      description: Use an access token in the Authorization header or `access_token` query parameter.
+      security:
+        - bearerAuth: []
+      responses:
+        '101':
+          description: WebSocket upgrade successful
 components:
   securitySchemes:
     bearerAuth:
