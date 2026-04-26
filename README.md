@@ -202,6 +202,7 @@ wscat -c "ws://localhost:8080/ws?access_token=<access_token>&channels=dashboard,
 docker compose -f deploy/docker-compose.yml run --rm quarantine-operator
 docker compose -f deploy/docker-compose.yml run --rm -e QUARANTINE_ACTION=list -e QUARANTINE_LIMIT=10 quarantine-operator
 docker compose -f deploy/docker-compose.yml run --rm -e QUARANTINE_ACTION=replay -e QUARANTINE_DRY_RUN=true -e QUARANTINE_FILTER_ID=<event_id> quarantine-operator
+docker compose -f deploy/docker-compose.yml run --rm -e QUARANTINE_ACTION=replay -e QUARANTINE_DRY_RUN=false -e QUARANTINE_REPLAY_APPROVED=true -e QUARANTINE_REPLAY_REASON="fixed producer schema" -e QUARANTINE_FILTER_ID=<event_id> quarantine-operator
 ```
 
 ## Local run without containers
@@ -224,6 +225,7 @@ This bootstrap includes shared platform code, OpenAPI, graceful shutdown, startu
 ## Documentation
 - [Current Implementation Status](docs/implementation-status.md)
 - [Technical Debt Register](docs/technical-debt-register.md)
+- [Event Contracts](docs/event-contracts.md)
 - [Load Testing Guide](loadtests/README.md)
 - [Load-Test Baseline](docs/load-test-baseline.md)
 - [Master Documentation Index](docs/master-spec.md)

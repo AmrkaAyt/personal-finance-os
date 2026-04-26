@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"time"
+
+	"personal-finance-os/internal/eventcontracts"
 )
 
 const TransactionUpsertedEventType = "transaction.upserted"
@@ -29,6 +31,9 @@ func TransactionOutboxEventID(transaction Transaction) string {
 
 func NewTransactionOutboxEvent(topic string, transaction Transaction) (OutboxEvent, error) {
 	event := NewTransactionUpsertedEvent(transaction)
+	if err := eventcontracts.ValidatePayload(eventcontracts.TransactionUpserted, event); err != nil {
+		return OutboxEvent{}, err
+	}
 	payload, err := json.Marshal(event)
 	if err != nil {
 		return OutboxEvent{}, err

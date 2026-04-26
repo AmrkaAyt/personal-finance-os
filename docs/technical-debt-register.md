@@ -220,27 +220,29 @@ Required fix:
 - leave `cmd/*` for wiring, handlers, startup only,
 - move orchestration into dedicated services with interfaces.
 
-### 5.2 Event Contracts Are Ad Hoc JSON, Not Versioned Contracts
+### 5.2 Event Contract Baseline Exists; Schema Evolution Still Needs Maturity
 
 Priority: `P1`
 
 Current state:
-- Kafka events are Go structs serialized as JSON,
-- there is no formal event schema/versioning strategy.
+- Kafka events are still JSON objects for V1 compatibility,
+- an explicit contract registry now exists in [internal/eventcontracts](../internal/eventcontracts),
+- producers validate required fields before publishing direct Kafka events,
+- published direct events include `x-event-type` and `x-event-version` headers,
+- contract fixture tests cover the current V1 event payloads.
 
 Why this matters:
-- hard to evolve contracts safely,
-- consumers can silently drift,
-- compatibility guarantees are weak.
+- compatibility is now more visible,
+- but schema evolution policy and consumer-driven compatibility checks are still basic.
 
 Why this matters for showcase quality:
 - event-driven systems are stronger when contracts are explicit and versioned.
 
 Required fix:
-- define event envelopes and versions,
-- document schema per topic,
+- add consumer-driven compatibility tests,
+- define version bump policy with examples,
 - optionally add protobuf/Avro/JSON schema discipline,
-- add consumer compatibility tests.
+- validate OpenAPI and event contract drift in CI.
 
 ### 5.3 gRPC Is Planned but Not Actually Used Yet
 
@@ -529,12 +531,11 @@ Priority: `P2`
 
 Current state:
 - OpenAPI exists,
-- event contracts exist informally,
-- but contract drift is not actively checked.
+- event contract registry and fixture tests exist,
+- but consumer-producer compatibility and OpenAPI handler drift are not fully checked.
 
 Required fix:
 - validate OpenAPI against handlers,
-- add event payload fixture tests,
 - add consumer-producer compatibility tests.
 
 ## 10. P2: Showcase Gaps Relative to the Chosen Stack
@@ -601,8 +602,8 @@ Current state:
 
 The recommended order from the current state is:
 
-1. richer event contracts and compatibility tests,
-2. quarantine replay approval/commit workflow with audit trail,
+1. consumer-driven event compatibility tests,
+2. quarantine retention and replay audit reporting,
 3. richer observability and tracing,
 4. stepped load baselines and soak runs,
 5. alert delivery policy hardening beyond Telegram-only rules,

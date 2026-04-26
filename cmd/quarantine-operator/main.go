@@ -59,6 +59,9 @@ func main() {
 	scanTimeout := env.Duration("QUARANTINE_SCAN_TIMEOUT", 5*time.Second)
 	limit := env.Int("QUARANTINE_LIMIT", 100)
 	dryRun := env.Bool("QUARANTINE_DRY_RUN", true)
+	replayApproved := env.Bool("QUARANTINE_REPLAY_APPROVED", false)
+	replayReason := strings.TrimSpace(env.String("QUARANTINE_REPLAY_REASON", ""))
+	replayOperator := strings.TrimSpace(env.String("QUARANTINE_REPLAY_OPERATOR", "local-operator"))
 	filter := quarantineFilter{
 		ID:          strings.TrimSpace(env.String("QUARANTINE_FILTER_ID", "")),
 		Service:     strings.TrimSpace(env.String("QUARANTINE_FILTER_SERVICE", "")),
@@ -84,6 +87,9 @@ func main() {
 		scanTimeout:         scanTimeout,
 		limit:               limit,
 		dryRun:              dryRun,
+		replayApproved:      replayApproved,
+		replayReason:        replayReason,
+		replayOperator:      replayOperator,
 		filter:              filter,
 	}
 	if err := operator.run(ctx); err != nil {
@@ -100,6 +106,9 @@ type service struct {
 	scanTimeout         time.Duration
 	limit               int
 	dryRun              bool
+	replayApproved      bool
+	replayReason        string
+	replayOperator      string
 	filter              quarantineFilter
 }
 
@@ -192,11 +201,16 @@ func (s *service) replay(ctx context.Context, events []kafkax.QuarantineEvent) e
 			})
 		}
 		return printJSON(map[string]any{
-			"action":         "replay",
-			"dry_run":        true,
-			"matching_count": len(events),
-			"events":         replayable,
+			"action":             "replay",
+			"dry_run":            true,
+			"matching_count":     len(events),
+			"commit_requires":    "QUARANTINE_DRY_RUN=false, QUARANTINE_REPLAY_APPROVED=true, and non-empty QUARANTINE_REPLAY_REASON",
+			"recommended_filter": recommendedReplayFilter(events),
+			"events":             replayable,
 		})
+	}
+	if err := s.validateReplayApproval(len(events)); err != nil {
+		return err
 	}
 
 	replayed := 0
@@ -209,7 +223,11 @@ func (s *service) replay(ctx context.Context, events []kafkax.QuarantineEvent) e
 	}()
 
 	for _, event := range events {
-		message, topic, err := buildReplayMessage(event, s.replayTopicOverride)
+		message, topic, err := buildReplayMessage(event, s.replayTopicOverride, replayAudit{
+			Operator:   s.replayOperator,
+			Reason:     s.replayReason,
+			ApprovedAt: time.Now().UTC(),
+		})
 		if err != nil {
 			skipped++
 			s.logger.Warn("skipping quarantine replay event", "id", event.ID, "error", err)
@@ -227,12 +245,31 @@ func (s *service) replay(ctx context.Context, events []kafkax.QuarantineEvent) e
 	}
 
 	return printJSON(map[string]any{
-		"action":   "replay",
-		"dry_run":  false,
-		"matched":  len(events),
-		"replayed": replayed,
-		"skipped":  skipped,
+		"action":            "replay",
+		"dry_run":           false,
+		"approved":          s.replayApproved,
+		"approval_operator": s.replayOperator,
+		"approval_reason":   s.replayReason,
+		"matched":           len(events),
+		"replayed":          replayed,
+		"skipped":           skipped,
 	})
+}
+
+func (s *service) validateReplayApproval(eventCount int) error {
+	if eventCount <= 0 {
+		return nil
+	}
+	if !s.replayApproved {
+		return fmt.Errorf("replay commit requires QUARANTINE_REPLAY_APPROVED=true")
+	}
+	if strings.TrimSpace(s.replayReason) == "" {
+		return fmt.Errorf("replay commit requires non-empty QUARANTINE_REPLAY_REASON")
+	}
+	if strings.TrimSpace(s.replayOperator) == "" {
+		return fmt.Errorf("replay commit requires non-empty QUARANTINE_REPLAY_OPERATOR")
+	}
+	return nil
 }
 
 func matchesFilter(event kafkax.QuarantineEvent, filter quarantineFilter) bool {
@@ -290,7 +327,13 @@ func buildSummary(events []kafkax.QuarantineEvent) quarantineSummary {
 	return summary
 }
 
-func buildReplayMessage(event kafkax.QuarantineEvent, topicOverride string) (kafka.Message, string, error) {
+type replayAudit struct {
+	Operator   string
+	Reason     string
+	ApprovedAt time.Time
+}
+
+func buildReplayMessage(event kafkax.QuarantineEvent, topicOverride string, audit replayAudit) (kafka.Message, string, error) {
 	topic := effectiveReplayTopic(event, topicOverride)
 	if topic == "" {
 		return kafka.Message{}, "", fmt.Errorf("missing source topic")
@@ -307,6 +350,11 @@ func buildReplayMessage(event kafkax.QuarantineEvent, topicOverride string) (kaf
 	headers := []kafka.Header{
 		{Key: "x-quarantine-replay-id", Value: []byte(strings.TrimSpace(event.ID))},
 		{Key: "x-quarantine-replayed-at", Value: []byte(time.Now().UTC().Format(time.RFC3339Nano))},
+		{Key: "x-quarantine-replay-operator", Value: []byte(strings.TrimSpace(audit.Operator))},
+		{Key: "x-quarantine-replay-reason", Value: []byte(strings.TrimSpace(audit.Reason))},
+	}
+	if !audit.ApprovedAt.IsZero() {
+		headers = append(headers, kafka.Header{Key: "x-quarantine-replay-approved-at", Value: []byte(audit.ApprovedAt.UTC().Format(time.RFC3339Nano))})
 	}
 	return kafka.Message{
 		Topic:   topic,
@@ -322,6 +370,13 @@ func effectiveReplayTopic(event kafkax.QuarantineEvent, override string) string 
 		return strings.TrimSpace(override)
 	}
 	return strings.TrimSpace(event.SourceTopic)
+}
+
+func recommendedReplayFilter(events []kafkax.QuarantineEvent) string {
+	if len(events) == 1 {
+		return "QUARANTINE_FILTER_ID=" + events[0].ID
+	}
+	return "narrow by QUARANTINE_FILTER_SERVICE, QUARANTINE_FILTER_SOURCE_TOPIC, QUARANTINE_FILTER_ERROR_KIND, or QUARANTINE_FILTER_ID before commit"
 }
 
 func printJSON(payload any) error {

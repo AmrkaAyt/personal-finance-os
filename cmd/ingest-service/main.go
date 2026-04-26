@@ -16,6 +16,7 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	mongooptions "go.mongodb.org/mongo-driver/mongo/options"
 
+	"personal-finance-os/internal/eventcontracts"
 	"personal-finance-os/internal/imports"
 	"personal-finance-os/internal/platform/cryptox"
 	"personal-finance-os/internal/platform/env"
@@ -261,7 +262,7 @@ func (s *service) handleImport(w http.ResponseWriter, r *http.Request) {
 		Status:     "queued",
 		ReceivedAt: now,
 	}
-	if err := kafkax.PublishJSON(ctx, s.kafkaWriter, importID, event); err != nil {
+	if err := kafkax.PublishContractJSON(ctx, s.kafkaWriter, importID, eventcontracts.StatementUploaded, event); err != nil {
 		kafkaEmitted = false
 		s.logger.Error("failed to emit upload event", "import_id", importID, "topic", s.uploadedTopic, "error", err)
 	}
@@ -365,7 +366,7 @@ func (s *service) emitUploadEvent(ctx context.Context, item imports.RawImport, s
 		Status:     status,
 		ReceivedAt: item.ReceivedAt,
 	}
-	if err := kafkax.PublishJSON(ctx, s.kafkaWriter, item.ImportID, event); err != nil {
+	if err := kafkax.PublishContractJSON(ctx, s.kafkaWriter, item.ImportID, eventcontracts.StatementUploaded, event); err != nil {
 		s.logger.Error("failed to emit upload event for existing import", "import_id", item.ImportID, "topic", s.uploadedTopic, "error", err)
 		return false
 	}

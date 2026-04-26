@@ -467,6 +467,12 @@ Currently used topics:
 - `alert.created`
 - `event.quarantine`
 
+Current contract baseline:
+- explicit V1 event contract registry in [internal/eventcontracts](../internal/eventcontracts),
+- direct Kafka producers validate required fields before publishing,
+- direct published events include `x-event-type` and `x-event-version` headers,
+- quarantine replay adds audit headers.
+
 ### 7.5 RabbitMQ
 
 Currently used queues:
@@ -655,8 +661,8 @@ Still out of current implementation:
 
 The next technical steps should be:
 
-1. formalize event contracts and add compatibility tests for Kafka payloads,
-2. add quarantine replay approval/commit workflows beyond dry-run,
+1. add consumer-driven compatibility tests for Kafka payloads,
+2. add quarantine retention policy and replay audit reporting,
 3. expand observability with richer service metrics and tracing,
 4. capture stepped load baselines and longer soak runs,
 5. batch-optimize the ledger import/upsert path,

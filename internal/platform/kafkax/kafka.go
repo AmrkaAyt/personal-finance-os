@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/segmentio/kafka-go"
+
+	"personal-finance-os/internal/eventcontracts"
 )
 
 func NewWriter(brokers []string, topic string) *kafka.Writer {
@@ -32,6 +34,29 @@ func PublishJSON(ctx context.Context, writer *kafka.Writer, key string, payload 
 		Value: body,
 		Time:  time.Now().UTC(),
 	})
+}
+
+func PublishContractJSON(ctx context.Context, writer *kafka.Writer, key string, contract eventcontracts.Contract, payload any) error {
+	if err := eventcontracts.ValidatePayload(contract, payload); err != nil {
+		return err
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	return writer.WriteMessages(ctx, kafka.Message{
+		Key:     []byte(key),
+		Value:   body,
+		Headers: ContractHeaders(contract),
+		Time:    time.Now().UTC(),
+	})
+}
+
+func ContractHeaders(contract eventcontracts.Contract) []kafka.Header {
+	return []kafka.Header{
+		{Key: "x-event-type", Value: []byte(contract.Type)},
+		{Key: "x-event-version", Value: []byte(contract.Version)},
+	}
 }
 
 func Ping(ctx context.Context, brokers []string) error {

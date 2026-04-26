@@ -14,6 +14,7 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 
+	"personal-finance-os/internal/eventcontracts"
 	"personal-finance-os/internal/imports"
 	parserdomain "personal-finance-os/internal/parser"
 	"personal-finance-os/internal/platform/cryptox"
@@ -325,7 +326,7 @@ func (s *service) emitParsedEvent(ctx context.Context, parsed imports.ParsedImpo
 		TransactionCount: parsed.Summary.TransactionCount,
 		ParsedAt:         parsed.ParsedAt,
 	}
-	return kafkax.PublishJSON(ctx, s.kafkaWriter, parsed.ImportID, event)
+	return kafkax.PublishContractJSON(ctx, s.kafkaWriter, parsed.ImportID, eventcontracts.StatementParsed, event)
 }
 
 func (s *service) findRawImport(ctx context.Context, userID, importID string) (imports.RawImport, error) {

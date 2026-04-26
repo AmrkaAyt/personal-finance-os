@@ -12,6 +12,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/segmentio/kafka-go"
 
+	"personal-finance-os/internal/eventcontracts"
 	"personal-finance-os/internal/ledger"
 	"personal-finance-os/internal/platform/env"
 	"personal-finance-os/internal/platform/httpx"
@@ -252,7 +253,7 @@ func (s *service) handleTransactionMessage(ctx context.Context, message kafka.Me
 		if err := rabbitmq.PublishJSON(operationCtx, channel, s.publishQueue, job); err != nil {
 			return err
 		}
-		if err := kafkax.PublishJSON(operationCtx, s.kafkaWriter, alert.ID, alert); err != nil {
+		if err := kafkax.PublishContractJSON(operationCtx, s.kafkaWriter, alert.ID, eventcontracts.AlertCreated, alert); err != nil {
 			return err
 		}
 		s.logger.Info("alert emitted", "alert_id", alert.ID, "type", alert.Type, "severity", alert.Severity, "user_id", alert.UserID)

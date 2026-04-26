@@ -17,6 +17,7 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 
+	"personal-finance-os/internal/eventcontracts"
 	"personal-finance-os/internal/imports"
 	"personal-finance-os/internal/ledger"
 	"personal-finance-os/internal/platform/env"
@@ -402,9 +403,10 @@ func (s *service) publishClaimedOutboxEvent(ctx context.Context, event ledger.Ou
 	defer cancel()
 
 	if err := s.kafkaWriter.WriteMessages(publishCtx, kafka.Message{
-		Key:   []byte(event.MessageKey),
-		Value: []byte(event.Payload),
-		Time:  time.Now().UTC(),
+		Key:     []byte(event.MessageKey),
+		Value:   []byte(event.Payload),
+		Headers: outboxEventHeaders(event),
+		Time:    time.Now().UTC(),
 	}); err != nil {
 		releaseCtx, releaseCancel := context.WithTimeout(context.Background(), s.requestTimeout)
 		defer releaseCancel()
@@ -423,6 +425,14 @@ func (s *service) publishClaimedOutboxEvent(ctx context.Context, event ledger.Ou
 
 	s.logger.Info("ledger outbox event published", "event_id", event.ID, "event_type", event.EventType, "attempts", event.PublishAttempts)
 	return nil
+}
+
+func outboxEventHeaders(event ledger.OutboxEvent) []kafka.Header {
+	contract, ok := eventcontracts.ByType(event.EventType)
+	if !ok {
+		return nil
+	}
+	return kafkax.ContractHeaders(contract)
 }
 
 func ledgerManualTransactionFromRequest(userID, defaultAccountID, idempotencyKey string, input createTransactionRequest) ledger.Transaction {

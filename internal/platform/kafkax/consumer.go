@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/segmentio/kafka-go"
+
+	"personal-finance-os/internal/eventcontracts"
 )
 
 type Reader interface {
@@ -197,14 +199,18 @@ func quarantineAndCommit(ctx context.Context, options ConsumerOptions, message k
 
 	if options.QuarantineWriter != nil {
 		for {
+			if err := eventcontracts.ValidatePayload(eventcontracts.EventQuarantine, quarantineEvent); err != nil {
+				return err
+			}
 			body, marshalErr := json.Marshal(quarantineEvent)
 			if marshalErr != nil {
 				return marshalErr
 			}
 			if err := options.QuarantineWriter.WriteMessages(ctx, kafka.Message{
-				Key:   []byte(quarantineEvent.ID),
-				Value: body,
-				Time:  time.Now().UTC(),
+				Key:     []byte(quarantineEvent.ID),
+				Value:   body,
+				Headers: ContractHeaders(eventcontracts.EventQuarantine),
+				Time:    time.Now().UTC(),
 			}); err != nil {
 				if errors.Is(err, context.Canceled) || ctx.Err() != nil {
 					return nil
