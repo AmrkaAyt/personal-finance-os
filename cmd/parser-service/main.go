@@ -24,6 +24,8 @@ import (
 	"personal-finance-os/internal/platform/mongox"
 	"personal-finance-os/internal/platform/rabbitmq"
 	"personal-finance-os/internal/platform/runtime"
+	"personal-finance-os/internal/platform/secretx"
+	"personal-finance-os/internal/platform/secureenv"
 	"personal-finance-os/internal/platform/startupx"
 	"personal-finance-os/internal/platform/userctx"
 )
@@ -55,10 +57,28 @@ func main() {
 	parseQueue := env.String("RABBIT_PARSE_QUEUE", "parse.statement")
 	kafkaBrokers := env.Strings("KAFKA_BROKERS", []string{"localhost:9092"})
 	parsedTopic := env.String("KAFKA_PARSED_TOPIC", "statement.parsed")
+	encryptionKeyID := env.String("DATA_ENCRYPTION_KEY_ID", "local-v1")
+	encryptionKeyRef := secretx.RefOrEnv(env.String("DATA_ENCRYPTION_KEY_REF", ""), "DATA_ENCRYPTION_KEY_B64")
+	legacyKeysRef := secretx.RefOrEnv(env.String("DATA_ENCRYPTION_LEGACY_KEYS_REF", ""), "DATA_ENCRYPTION_LEGACY_KEYS")
+	if err := secureenv.Enforce(serviceName, logger,
+		secureenv.RequireNonEmpty("DATA_ENCRYPTION_KEY_ID", encryptionKeyID),
+		secureenv.RequireNonEmpty("DATA_ENCRYPTION_KEY_REF", encryptionKeyRef),
+		secureenv.RejectPrefix("DATA_ENCRYPTION_KEY_REF", encryptionKeyRef, "env:"),
+	); err != nil {
+		panic(err)
+	}
+	encryptionKey, err := secretx.Resolve(encryptionKeyRef)
+	if err != nil {
+		panic(err)
+	}
+	legacyKeys, err := secretx.Resolve(legacyKeysRef)
+	if err != nil {
+		panic(err)
+	}
 	keyring, err := cryptox.NewKeyring(
-		env.String("DATA_ENCRYPTION_KEY_ID", "local-v1"),
-		env.String("DATA_ENCRYPTION_KEY_B64", ""),
-		env.String("DATA_ENCRYPTION_LEGACY_KEYS", ""),
+		encryptionKeyID,
+		encryptionKey,
+		legacyKeys,
 	)
 	if err != nil {
 		panic(err)
@@ -119,11 +139,6 @@ func main() {
 
 	if err := startupx.Retry(startupCtx, logger, "kafka broker ping", func(ctx context.Context) error {
 		return kafkax.Ping(ctx, kafkaBrokers)
-	}); err != nil {
-		panic(err)
-	}
-	if err := startupx.Retry(startupCtx, logger, "kafka ensure parsed topic", func(ctx context.Context) error {
-		return kafkax.EnsureTopic(ctx, kafkaBrokers, parsedTopic, 1, 1)
 	}); err != nil {
 		panic(err)
 	}

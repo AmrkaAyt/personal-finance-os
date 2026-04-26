@@ -75,12 +75,11 @@ func TestGatewayManualTransactionDrivesAnalyticsAndAlerts(t *testing.T) {
 	token := loginDemoUser(t, client, baseURL)
 
 	now := time.Now().UTC()
-	userID := fmt.Sprintf("integration-user-%d", now.UnixNano())
 	merchant := fmt.Sprintf("integration-merchant-%d", now.UnixNano())
 	category := "integration_test"
+	idempotencyKey := fmt.Sprintf("integration-%d", now.UnixNano())
 
 	payload := map[string]any{
-		"user_id":      userID,
 		"account_id":   "integration-account",
 		"merchant":     merchant,
 		"category":     category,
@@ -99,6 +98,7 @@ func TestGatewayManualTransactionDrivesAnalyticsAndAlerts(t *testing.T) {
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", idempotencyKey)
 
 	response, err := client.Do(request)
 	if err != nil {
@@ -112,7 +112,7 @@ func TestGatewayManualTransactionDrivesAnalyticsAndAlerts(t *testing.T) {
 	day := now.Format("2006-01-02")
 
 	waitFor(t, 30*time.Second, 1*time.Second, "analytics daily spend projection", func() (bool, error) {
-		analytics, err := getAnalytics(client, baseURL, token, fmt.Sprintf("/api/v1/analytics/projections/daily-spend?user_id=%s&from=%s&to=%s&category=%s", userID, day, day, category))
+		analytics, err := getAnalytics(client, baseURL, token, fmt.Sprintf("/api/v1/analytics/projections/daily-spend?from=%s&to=%s&category=%s", day, day, category))
 		if err != nil {
 			return false, err
 		}
@@ -125,7 +125,7 @@ func TestGatewayManualTransactionDrivesAnalyticsAndAlerts(t *testing.T) {
 	})
 
 	waitFor(t, 30*time.Second, 1*time.Second, "analytics alert projection", func() (bool, error) {
-		analytics, err := getAnalytics(client, baseURL, token, fmt.Sprintf("/api/v1/analytics/projections/alerts?user_id=%s&from=%s&to=%s&severity=warning", userID, day, day))
+		analytics, err := getAnalytics(client, baseURL, token, fmt.Sprintf("/api/v1/analytics/projections/alerts?from=%s&to=%s&severity=warning", day, day))
 		if err != nil {
 			return false, err
 		}

@@ -36,6 +36,8 @@ The repository now includes a real local pipeline for `api-gateway`, `auth-servi
 docker compose -f deploy/docker-compose.yml up --build api-gateway auth-service ingest-service parser-service ledger-service rule-engine notification-service analytics-writer realtime-gateway mongodb rabbitmq kafka postgres redis clickhouse
 ```
 
+Kafka topics are bootstrapped by the one-shot `kafka-bootstrap` dependency before Kafka-based services start.
+
 ### Run schema migrations explicitly
 ```bash
 docker compose -f deploy/docker-compose.yml run --rm migrate
@@ -49,6 +51,27 @@ docker compose -f deploy/docker-compose.yml run --rm sensitive-data-maintenance
 ### Run integration tests against the gateway
 ```bash
 INTEGRATION_TESTS=1 INTEGRATION_BASE_URL=http://localhost:8080 go test -tags=integration ./tests/integration/...
+```
+
+### Run load tests with k6
+```bash
+docker compose -f deploy/docker-compose.yml run --rm k6 run /work/loadtests/k6/scenarios/mixed-v1.js
+```
+
+To persist the baseline summary:
+
+```bash
+docker compose -f deploy/docker-compose.yml run --rm k6 run --summary-export=/work/loadtests/out/mixed-summary.json /work/loadtests/k6/scenarios/mixed-v1.js
+```
+
+Targeted scenarios:
+
+```bash
+docker compose -f deploy/docker-compose.yml run --rm k6 run /work/loadtests/k6/scenarios/auth-login.js
+docker compose -f deploy/docker-compose.yml run --rm k6 run /work/loadtests/k6/scenarios/transactions-write.js
+docker compose -f deploy/docker-compose.yml run --rm k6 run /work/loadtests/k6/scenarios/read-heavy.js
+docker compose -f deploy/docker-compose.yml run --rm k6 run /work/loadtests/k6/scenarios/import-pipeline.js
+docker compose -f deploy/docker-compose.yml run --rm k6 run /work/loadtests/k6/scenarios/ws-connect.js
 ```
 
 ### Login through the gateway
@@ -101,6 +124,21 @@ curl -H "Authorization: Bearer <access_token>" \
   http://localhost:8080/api/v1/notifications/status
 ```
 
+### Get notification preferences
+```bash
+curl -H "Authorization: Bearer <access_token>" \
+  http://localhost:8080/api/v1/notifications/preferences
+```
+
+### Update notification preferences
+```bash
+curl -X PUT \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{"telegram_enabled":true,"batch_non_critical":true,"quiet_hours_enabled":true,"quiet_start_minute":0,"quiet_end_minute":1439,"quiet_timezone":"UTC","disabled_alert_types":["new_merchant"]}' \
+  http://localhost:8080/api/v1/notifications/preferences
+```
+
 ### Queue a Telegram demo notification
 ```bash
 curl -X POST \
@@ -115,9 +153,19 @@ curl -X POST \
   http://localhost:8080/api/v1/notifications/telegram/poll/once
 ```
 
+### Confirm Telegram link code under JWT
+```bash
+curl -X POST \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{"code":"ABCDEFGH"}' \
+  http://localhost:8080/api/v1/notifications/telegram/link/confirm
+```
+
 ### Telegram bot capabilities in V1
-- `/help`, `/status`, `/report`, `/alerts`, `/transactions`
+- `/help`, `/status`, `/link`, `/logout`, `/whoami`, `/report`, `/alerts`, `/transactions`
 - accepts `CSV` and text-based `PDF` statement documents
+- supports safer Telegram binding via one-time link code + JWT-confirmed API call
 - forwards documents to `ingest-service`
 - sends follow-up parse summary after `parser-service` completes
 
@@ -144,6 +192,18 @@ curl -H "Authorization: Bearer <access_token>" \
 wscat -c "ws://localhost:8080/ws?access_token=<access_token>&channels=dashboard,alerts,transactions"
 ```
 
+## Observability
+- Prometheus: `http://localhost:9090`
+- Grafana: `http://localhost:3000`
+- provisioned dashboard: `Personal Finance OS Overview`
+
+## Quarantine Operations
+```bash
+docker compose -f deploy/docker-compose.yml run --rm quarantine-operator
+docker compose -f deploy/docker-compose.yml run --rm -e QUARANTINE_ACTION=list -e QUARANTINE_LIMIT=10 quarantine-operator
+docker compose -f deploy/docker-compose.yml run --rm -e QUARANTINE_ACTION=replay -e QUARANTINE_DRY_RUN=true -e QUARANTINE_FILTER_ID=<event_id> quarantine-operator
+```
+
 ## Local run without containers
 1. Start infrastructure from `deploy/docker-compose.yml`.
 2. Run a service with `go run ./cmd/<service-name>`.
@@ -159,11 +219,13 @@ Details:
 - [Environment Structure](docs/environment.md)
 
 ## Current scope
-This bootstrap includes shared platform code, OpenAPI, graceful shutdown, startup retry/backoff for external dependencies, versioned database migrations, sensitive-data maintenance, and a working Docker-backed event pipeline for auth, gateway routing, import, parsing, ledger persistence, rule evaluation, notification dispatch, analytics projections, and realtime fan-out. Gateway-level integration tests cover `login -> import -> parse` and `login -> create transaction -> analytics/alerts`. Telegram V1 now supports real outbound delivery, basic polling commands, and statement document intake for `CSV` and text-based `PDF`.
+This bootstrap includes shared platform code, OpenAPI, graceful shutdown, startup retry/backoff for external dependencies, versioned database migrations, one-shot Kafka bootstrap, sensitive-data maintenance, quarantine operator tooling, and a working Docker-backed event pipeline for auth, gateway routing, import, parsing, ledger persistence, rule evaluation, notification dispatch, analytics projections, and realtime fan-out. Gateway-level integration tests cover `login -> import -> parse` and `login -> create transaction -> analytics/alerts`. Telegram V1 now supports real outbound delivery, one-time link-code binding confirmed under JWT, user-level notification preferences, quiet windows, alert digest batching, and statement document intake for `CSV` and text-based `PDF`.
 
 ## Documentation
 - [Current Implementation Status](docs/implementation-status.md)
 - [Technical Debt Register](docs/technical-debt-register.md)
+- [Load Testing Guide](loadtests/README.md)
+- [Load-Test Baseline](docs/load-test-baseline.md)
 - [Master Documentation Index](docs/master-spec.md)
 - [Product Charter](docs/product-charter.md)
 - [Product Architecture Specification](docs/product-architecture-spec.md)

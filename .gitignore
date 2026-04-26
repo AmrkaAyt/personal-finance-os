@@ -5,7 +5,9 @@
 /.tmp/
 /var/
 *.log
+*.exe
 .env
 .env.local
 env/*.local.env
 /.gocache/
+/tmp_*.go

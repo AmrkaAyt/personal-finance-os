@@ -1,0 +1,239 @@
+{
+    "root_group": {
+        "name": "",
+        "path": "",
+        "id": "d41d8cd98f00b204e9800998ecf8427e",
+        "groups": {
+            "setup": {
+                "groups": {},
+                "checks": {
+                        "login status is 200": {
+                            "name": "login status is 200",
+                            "path": "::setup::login status is 200",
+                            "id": "bb27b460b057923f4a083e3603c038b9",
+                            "passes": 1,
+                            "fails": 0
+                        },
+                        "login returned access token": {
+                            "id": "e80fd5a398c18eff6ec578f554906a45",
+                            "passes": 1,
+                            "fails": 0,
+                            "name": "login returned access token",
+                            "path": "::setup::login returned access token"
+                        }
+                    },
+                "name": "setup",
+                "path": "::setup",
+                "id": "5c0f8025f7e0b6654089e5b00e950f1a"
+            }
+        },
+        "checks": {
+            "mixed transaction is 201": {
+                "fails": 0,
+                "name": "mixed transaction is 201",
+                "path": "::mixed transaction is 201",
+                "id": "34ea202b259863f4e2d9a7797966b450",
+                "passes": 68952
+            },
+            "mixed login is 200": {
+                "name": "mixed login is 200",
+                "path": "::mixed login is 200",
+                "id": "d0d5ad5fb526f89f2c2d02cb55c96a58",
+                "passes": 109055,
+                "fails": 0
+            },
+            "mixed transactions list is 200": {
+                "name": "mixed transactions list is 200",
+                "path": "::mixed transactions list is 200",
+                "id": "1864cb833b608748a5d14f9e642a28b5",
+                "passes": 11793,
+                "fails": 0
+            },
+            "mixed categories list is 200": {
+                "name": "mixed categories list is 200",
+                "path": "::mixed categories list is 200",
+                "id": "d2c6c116d756febc48d2554427dd2f94",
+                "passes": 11793,
+                "fails": 0
+            },
+            "mixed analytics summary is 200": {
+                "path": "::mixed analytics summary is 200",
+                "id": "56a7539aa47dd5fa41e1731ecc9d8830",
+                "passes": 11793,
+                "fails": 0,
+                "name": "mixed analytics summary is 200"
+            },
+            "mixed import accepted": {
+                "fails": 0,
+                "name": "mixed import accepted",
+                "path": "::mixed import accepted",
+                "id": "b344544b35f211f4527be4a8f7b5163b",
+                "passes": 715
+            },
+            "mixed import status is 200": {
+                "path": "::mixed import status is 200",
+                "id": "ff4959b18b08d7c85755006249176754",
+                "passes": 715,
+                "fails": 0,
+                "name": "mixed import status is 200"
+            },
+            "mixed websocket upgrade is 101": {
+                "name": "mixed websocket upgrade is 101",
+                "path": "::mixed websocket upgrade is 101",
+                "id": "d5ff43b46d0ed262af7811efe438f290",
+                "passes": 300,
+                "fails": 0
+            }
+        }
+    },
+    "metrics": {
+        "ws_msgs_received": {
+            "rate": 28.59028755433431,
+            "count": 1717
+        },
+        "checks": {
+            "fails": 0,
+            "passes": 215118,
+            "thresholds": {
+                "rate>0.98": false
+            },
+            "value": 1
+        },
+        "http_req_tls_handshaking": {
+            "p(90)": 0,
+            "p(95)": 0,
+            "avg": 0,
+            "min": 0,
+            "med": 0,
+            "max": 0
+        },
+        "ws_session_duration": {
+            "med": 1005.92304,
+            "max": 1047.338531,
+            "p(90)": 1012.83694,
+            "p(95)": 1020.21885675,
+            "avg": 1008.075153596666,
+            "min": 1001.500779
+        },
+        "http_req_failed": {
+            "passes": 0,
+            "fails": 214817,
+            "thresholds": {
+                "rate<0.03": false
+            },
+            "value": 0
+        },
+        "data_received": {
+            "count": 231843052,
+            "rate": 3860488.948255377
+        },
+        "http_req_waiting": {
+            "med": 4.237661,
+            "max": 809.876266,
+            "p(90)": 17.494175,
+            "p(95)": 123.91403239999934,
+            "avg": 17.752961668062046,
+            "min": 0.215716
+        },
+        "ws_sessions": {
+            "count": 300,
+            "rate": 4.995390952999588
+        },
+        "http_req_blocked": {
+            "max": 46.027079,
+            "p(90)": 0.004068,
+            "p(95)": 0.00499,
+            "avg": 0.009919869358569871,
+            "min": 0.00034,
+            "med": 0.002355
+        },
+        "iteration_duration": {
+            "med": 4.968889,
+            "max": 1047.39983,
+            "p(90)": 19.21875260000001,
+            "p(95)": 148.48927529999946,
+            "avg": 21.23158802887123,
+            "min": 0.297234
+        },
+        "iterations": {
+            "rate": 3177.318415655388,
+            "count": 190815
+        },
+        "http_req_receiving": {
+            "med": 0.026171,
+            "max": 41.091221,
+            "p(90)": 0.073983,
+            "p(95)": 0.1355343999999998,
+            "avg": 0.06868853674522954,
+            "min": 0.003427
+        },
+        "http_reqs": {
+            "count": 214817,
+            "rate": 3576.982994501708
+        },
+        "http_req_sending": {
+            "min": 0.001303,
+            "med": 0.009248,
+            "max": 48.51991,
+            "p(90)": 0.017153,
+            "p(95)": 0.025299,
+            "avg": 0.020908066982595216
+        },
+        "http_req_connecting": {
+            "p(95)": 0,
+            "avg": 0.00398421048613471,
+            "min": 0,
+            "med": 0,
+            "max": 45.997723,
+            "p(90)": 0
+        },
+        "vus": {
+            "value": 40,
+            "min": 40,
+            "max": 85
+        },
+        "vus_max": {
+            "value": 85,
+            "min": 85,
+            "max": 85
+        },
+        "http_req_duration": {
+            "p(90)": 17.6473644,
+            "p(95)": 124.07421319999976,
+            "avg": 17.842558271789287,
+            "min": 0.244612,
+            "med": 4.33342,
+            "max": 809.907065,
+            "thresholds": {
+                "p(95)<1200": false
+            }
+        },
+        "ws_connecting": {
+            "avg": 7.301600166666658,
+            "min": 1.351886,
+            "med": 5.2206589999999995,
+            "max": 46.258972,
+            "p(90)": 11.980575200000002,
+            "p(95)": 18.18043890000001
+        },
+        "http_req_duration{expected_response:true}": {
+            "avg": 17.842558271789287,
+            "min": 0.244612,
+            "med": 4.33342,
+            "max": 809.907065,
+            "p(90)": 17.6473644,
+            "p(95)": 124.07421319999976
+        },
+        "data_sent": {
+            "count": 82077422,
+            "rate": 1366696.0376810979
+        }
+    },
+    "setup_data": {
+        "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlcyI6WyJvd25lciIsIm1lbWJlciJdLCJ0eXBlIjoiYWNjZXNzIiwiaXNzIjoiYXV0aC1zZXJ2aWNlIiwic3ViIjoidXNlci1kZW1vIiwiZXhwIjoxNzczOTEyOTAzLCJpYXQiOjE3NzM5MTIwMDMsImp0aSI6Ijg2ZTJiZDQ5ZDBjZWE4MjEyY2M4MGJiZWVlOWNmOWVkIn0.zd7L8GBD07uuTp3-jOk6J5c03vxTQjsrtia3qC6VFqQ",
+        "window": {
+            "from": "2026-03-01",
+            "to": "2026-03-19"
+        }
+    }
+}

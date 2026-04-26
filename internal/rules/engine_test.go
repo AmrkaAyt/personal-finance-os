@@ -61,6 +61,30 @@ func TestEngineSuppressesImportedMerchantAndLargeTransactionAlertsByDefault(t *t
 	}
 }
 
+func TestEngineTreatsManualIdempotencySourcesAsManualTransactions(t *testing.T) {
+	engine := NewEngine(Config{
+		LargeTransactionThresholdCents: 1500,
+		NewMerchantThresholdCents:      1200,
+	}, NewMemoryStore())
+
+	alerts, err := engine.Evaluate(context.Background(), ledger.TransactionUpsertedEvent{
+		TransactionID:  "txn-manual-1",
+		UserID:         "user-demo",
+		SourceImportID: "manual:idempotency-key",
+		Merchant:       "Manual Store",
+		Category:       "food",
+		AmountCents:    -2000,
+		Currency:       "USD",
+		OccurredAt:     time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(alerts) != 2 {
+		t.Fatalf("expected large transaction and new merchant alerts, got %#v", alerts)
+	}
+}
+
 func TestEngineDeduplicatesBudgetThresholds(t *testing.T) {
 	engine := NewEngine(Config{
 		BudgetWarningRatio:  0.8,

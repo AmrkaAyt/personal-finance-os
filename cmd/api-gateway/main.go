@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -15,6 +16,7 @@ import (
 	"personal-finance-os/internal/platform/logging"
 	"personal-finance-os/internal/platform/rbac"
 	"personal-finance-os/internal/platform/runtime"
+	"personal-finance-os/internal/platform/secureenv"
 	"personal-finance-os/internal/platform/userctx"
 )
 
@@ -48,7 +50,14 @@ func main() {
 
 	env.LoadService(serviceName)
 	logger := logging.New(serviceName)
-	manager := jwtx.NewManager(env.String("JWT_SECRET", "dev-secret"), serviceName, 15*time.Minute, 7*24*time.Hour)
+	jwtSecret := env.String("JWT_SECRET", "dev-secret")
+	if err := secureenv.Enforce(serviceName, logger,
+		secureenv.RequireNonEmpty("JWT_SECRET", jwtSecret),
+		secureenv.RejectAnyOf("JWT_SECRET", jwtSecret, "dev-secret"),
+	); err != nil {
+		panic(err)
+	}
+	manager := jwtx.NewManager(jwtSecret, serviceName, 15*time.Minute, 7*24*time.Hour)
 
 	svc, err := newService(logger, manager)
 	if err != nil {
@@ -87,8 +96,11 @@ func main() {
 	mux.Handle("GET /api/v1/recurring", svc.protected(svc.proxyHandler(svc.ledgerProxy), readRoles...))
 
 	mux.Handle("GET /api/v1/notifications/status", svc.protected(svc.proxyHandler(svc.notificationProxy), readRoles...))
+	mux.Handle("GET /api/v1/notifications/preferences", svc.protected(svc.proxyHandler(svc.notificationProxy), readRoles...))
+	mux.Handle("PUT /api/v1/notifications/preferences", svc.protected(svc.proxyHandler(svc.notificationProxy), writeRoles...))
 	mux.Handle("POST /api/v1/notifications/telegram/demo", svc.protected(svc.proxyHandler(svc.notificationProxy), writeRoles...))
 	mux.Handle("POST /api/v1/notifications/telegram/poll/once", svc.protected(svc.proxyHandler(svc.notificationProxy), writeRoles...))
+	mux.Handle("POST /api/v1/notifications/telegram/link/confirm", svc.protected(svc.proxyHandler(svc.notificationProxy), writeRoles...))
 
 	mux.Handle("GET /api/v1/analytics/projections", svc.protected(svc.proxyHandler(svc.analyticsProxy), readRoles...))
 	mux.Handle("GET /api/v1/analytics/projections/daily-spend", svc.protected(svc.proxyHandler(svc.analyticsProxy), readRoles...))
@@ -166,6 +178,7 @@ func newReverseProxy(rawURL, name string, logger *slog.Logger) (*url.URL, *httpu
 	}
 
 	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.Transport = newProxyTransport()
 	baseDirector := proxy.Director
 	proxy.Director = func(request *http.Request) {
 		baseDirector(request)
@@ -176,6 +189,21 @@ func newReverseProxy(rawURL, name string, logger *slog.Logger) (*url.URL, *httpu
 		httpx.JSON(w, http.StatusBadGateway, map[string]string{"error": fmt.Sprintf("%s unavailable", name)})
 	}
 	return target, proxy, nil
+}
+
+func newProxyTransport() *http.Transport {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = http.ProxyFromEnvironment
+	transport.DialContext = (&net.Dialer{
+		Timeout:   5 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}).DialContext
+	transport.MaxIdleConns = env.Int("PROXY_MAX_IDLE_CONNS", 1024)
+	transport.MaxIdleConnsPerHost = env.Int("PROXY_MAX_IDLE_CONNS_PER_HOST", 256)
+	transport.MaxConnsPerHost = env.Int("PROXY_MAX_CONNS_PER_HOST", 512)
+	transport.IdleConnTimeout = env.Duration("PROXY_IDLE_CONN_TIMEOUT", 90*time.Second)
+	transport.ForceAttemptHTTP2 = false
+	return transport
 }
 
 func (s *service) handleProfile(w http.ResponseWriter, r *http.Request) {

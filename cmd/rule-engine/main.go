@@ -109,16 +109,6 @@ func main() {
 	}); err != nil {
 		panic(err)
 	}
-	if err := startupx.Retry(startupCtx, logger, "kafka ensure alert topic", func(ctx context.Context) error {
-		return kafkax.EnsureTopic(ctx, kafkaBrokers, alertTopic, 1, 1)
-	}); err != nil {
-		panic(err)
-	}
-	if err := startupx.Retry(startupCtx, logger, "kafka ensure quarantine topic", func(ctx context.Context) error {
-		return kafkax.EnsureTopic(ctx, kafkaBrokers, quarantineTopic, 1, 1)
-	}); err != nil {
-		panic(err)
-	}
 
 	var store rules.StateStore = rules.NewMemoryStore()
 	if redisAddr := env.String("REDIS_ADDR", ""); redisAddr != "" {
@@ -224,6 +214,7 @@ func (s *service) consumeTransactions(ctx context.Context, logger *slog.Logger) 
 		ConsumerGroup:    s.consumerGroup,
 		RetryBackoff:     s.retryBackoff,
 		MaxAttempts:      s.maxAttempts,
+		IncludePayload:   true,
 	})
 }
 

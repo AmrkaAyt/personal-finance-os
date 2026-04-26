@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -105,17 +106,6 @@ type parsedImportResponse struct {
 		TotalDebitCents  int64    `json:"total_debit_cents"`
 		TotalCreditCents int64    `json:"total_credit_cents"`
 	} `json:"summary"`
-}
-
-type authVerifyRequest struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
-}
-
-type authVerifyResponse struct {
-	UserID   string   `json:"user_id"`
-	Username string   `json:"username"`
-	Roles    []string `json:"roles"`
 }
 
 func (s *service) pollTelegramUpdates(ctx context.Context, logger *slog.Logger) error {
@@ -239,8 +229,8 @@ func (s *service) handleTelegramCommand(ctx context.Context, message *telegramMe
 		return command, s.telegramHelpText()
 	case "/status":
 		return command, s.telegramStatusText(ctx, message.Chat.ID)
-	case "/login":
-		return command, s.telegramLoginText(ctx, message.Chat.ID, args)
+	case "/link":
+		return command, s.telegramLinkText(ctx, message.Chat.ID)
 	case "/logout":
 		return command, s.telegramLogoutText(ctx, message.Chat.ID)
 	case "/whoami":
@@ -266,7 +256,7 @@ func (s *service) handleTelegramDocument(ctx context.Context, message *telegramM
 		return "Ошибка проверки авторизации Telegram."
 	}
 	if !ok {
-		return "Нет авторизации. Сначала выполни /login <username> <password>."
+		return "Нет авторизации. Сначала выполни /link и подтверди привязку через API."
 	}
 	if !isSupportedTelegramImport(document.FileName) {
 		return "Неподдерживаемый тип файла. Отправь CSV или PDF с текстовым слоем."
@@ -457,7 +447,7 @@ func (s *service) telegramHelpText() string {
 		"Доступные команды:",
 		"/help",
 		"/status",
-		"/login <username> <password>",
+		"/link",
 		"/logout",
 		"/whoami",
 		"/report [today|month]",
@@ -478,30 +468,24 @@ func (s *service) telegramStatusText(ctx context.Context, chatID int64) string {
 		authLine = fmt.Sprintf("Авторизация: %s (%s)", binding.Username, binding.UserID)
 	}
 	return fmt.Sprintf(
-		"Сервис уведомлений работает.\nPolling: %t\nОчередь: %s\nDLQ: %s\n%s\nПоследняя команда: %s\nПоследний чат: %s",
+		"Сервис уведомлений работает.\nPolling: %t\nОчередь: %s\nDLQ: %s\nTTL кода привязки: %s\n%s\nПоследняя команда: %s\nПоследний чат: %s",
 		s.telegramPollingEnabled,
 		s.queue,
 		s.dlq,
+		s.telegramLinkCodeTTL.String(),
 		authLine,
 		firstNonEmpty(state["last_command"].(string), "n/a"),
 		firstNonEmpty(state["last_chat_id"].(string), "n/a"),
 	)
 }
 
-func (s *service) telegramLoginText(ctx context.Context, chatID int64, args []string) string {
-	if len(args) < 2 {
-		return "Использование: /login <username> <password>"
-	}
-	binding, err := s.verifyTelegramCredentials(ctx, strings.TrimSpace(args[0]), strings.TrimSpace(args[1]))
+func (s *service) telegramLinkText(ctx context.Context, chatID int64) string {
+	code, err := s.issueTelegramLinkCode(ctx, chatID)
 	if err != nil {
-		return "Не удалось выполнить вход."
+		s.logger.Error("failed to issue telegram link code", "chat_id", chatID, "error", err)
+		return "Не удалось создать код привязки."
 	}
-	binding.ChatID = strconv.FormatInt(chatID, 10)
-	binding.BoundAt = time.Now().UTC()
-	if err := s.authStore.Save(ctx, binding); err != nil {
-		return "Не удалось сохранить привязку Telegram."
-	}
-	return fmt.Sprintf("Telegram-чат привязан.\nПользователь: %s\nUser ID: %s", binding.Username, binding.UserID)
+	return buildTelegramLinkInstructionsText(code, s.apiGatewayExternalURL, s.telegramLinkCodeTTL)
 }
 
 func (s *service) telegramLogoutText(ctx context.Context, chatID int64) string {
@@ -517,7 +501,7 @@ func (s *service) telegramWhoAmIText(ctx context.Context, chatID int64) string {
 		return "Ошибка проверки авторизации."
 	}
 	if !ok {
-		return "Нет авторизации. Сначала выполни /login <username> <password>."
+		return "Нет авторизации. Сначала выполни /link и подтверди привязку через API."
 	}
 	return fmt.Sprintf("Привязанный пользователь: %s\nUser ID: %s\nРоли: %s", binding.Username, binding.UserID, strings.Join(binding.Roles, ", "))
 }
@@ -528,7 +512,7 @@ func (s *service) telegramReportText(ctx context.Context, chatID int64, period s
 		return "Ошибка проверки авторизации."
 	}
 	if !ok {
-		return "Нет авторизации. Сначала выполни /login <username> <password>."
+		return "Нет авторизации. Сначала выполни /link и подтверди привязку через API."
 	}
 	from, to := reportWindow(period)
 	query := fmt.Sprintf("%s/api/v1/analytics/projections/summary?from=%s&to=%s", s.analyticsServiceURL, from.Format("2006-01-02"), to.Format("2006-01-02"))
@@ -558,7 +542,7 @@ func (s *service) telegramAlertsText(ctx context.Context, chatID int64) string {
 		return "Ошибка проверки авторизации."
 	}
 	if !ok {
-		return "Нет авторизации. Сначала выполни /login <username> <password>."
+		return "Нет авторизации. Сначала выполни /link и подтверди привязку через API."
 	}
 	now := time.Now().UTC()
 	query := fmt.Sprintf("%s/api/v1/analytics/projections/alerts?from=%s&to=%s", s.analyticsServiceURL, now.Format("2006-01-02"), now.Format("2006-01-02"))
@@ -584,7 +568,7 @@ func (s *service) telegramTransactionsText(ctx context.Context, chatID int64, ra
 		return "Ошибка проверки авторизации."
 	}
 	if !ok {
-		return "Нет авторизации. Сначала выполни /login <username> <password>."
+		return "Нет авторизации. Сначала выполни /link и подтверди привязку через API."
 	}
 	limit := 5
 	if parsed, err := strconv.Atoi(strings.TrimSpace(rawLimit)); err == nil && parsed > 0 && parsed <= 20 {
@@ -645,42 +629,6 @@ func (s *service) fetchAnalytics(ctx context.Context, endpoint, userID string) (
 	return payload, err
 }
 
-func (s *service) verifyTelegramCredentials(ctx context.Context, username, password string) (telegramauth.Binding, error) {
-	payload, err := json.Marshal(authVerifyRequest{
-		Username: username,
-		Password: password,
-	})
-	if err != nil {
-		return telegramauth.Binding{}, err
-	}
-
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, s.authServiceURL+"/internal/auth/verify", bytes.NewReader(payload))
-	if err != nil {
-		return telegramauth.Binding{}, err
-	}
-	request.Header.Set("Content-Type", "application/json")
-
-	response, err := s.httpClient.Do(request)
-	if err != nil {
-		return telegramauth.Binding{}, err
-	}
-	defer response.Body.Close()
-
-	if response.StatusCode >= http.StatusMultipleChoices {
-		return telegramauth.Binding{}, fmt.Errorf("auth status=%d", response.StatusCode)
-	}
-
-	var verified authVerifyResponse
-	if err := json.NewDecoder(response.Body).Decode(&verified); err != nil {
-		return telegramauth.Binding{}, err
-	}
-	return telegramauth.Binding{
-		UserID:   strings.TrimSpace(verified.UserID),
-		Username: strings.TrimSpace(verified.Username),
-		Roles:    verified.Roles,
-	}, nil
-}
-
 func (s *service) resolveTelegramBinding(ctx context.Context, chatID int64) (telegramauth.Binding, bool, error) {
 	binding, ok, err := s.authStore.Get(ctx, strconv.FormatInt(chatID, 10))
 	if err != nil {
@@ -689,15 +637,7 @@ func (s *service) resolveTelegramBinding(ctx context.Context, chatID int64) (tel
 	if ok {
 		return binding, true, nil
 	}
-	if strings.TrimSpace(s.authServiceURL) != "" || strings.TrimSpace(s.telegramDefaultUserID) == "" {
-		return telegramauth.Binding{}, false, nil
-	}
-	return telegramauth.Binding{
-		ChatID:   strconv.FormatInt(chatID, 10),
-		UserID:   strings.TrimSpace(s.telegramDefaultUserID),
-		Username: "default",
-		Roles:    []string{"owner"},
-	}, true, nil
+	return telegramauth.Binding{}, false, nil
 }
 
 func (s *service) resolveTelegramUserID(ctx context.Context, chatID int64) (string, bool, error) {
@@ -734,6 +674,70 @@ func parseAllowedChatIDs(raw string, fallback string) map[string]struct{} {
 	}
 	if len(result) == 0 && strings.TrimSpace(fallback) != "" {
 		result[strings.TrimSpace(fallback)] = struct{}{}
+	}
+	return result
+}
+
+func (s *service) issueTelegramLinkCode(ctx context.Context, chatID int64) (string, error) {
+	code, err := newTelegramLinkCode()
+	if err != nil {
+		return "", err
+	}
+	pending := telegramauth.PendingLink{
+		Code:      code,
+		ChatID:    strconv.FormatInt(chatID, 10),
+		CreatedAt: time.Now().UTC(),
+		ExpiresAt: time.Now().UTC().Add(s.telegramLinkCodeTTL),
+	}
+	if err := s.linkStore.SavePending(ctx, pending); err != nil {
+		return "", err
+	}
+	return code, nil
+}
+
+func newTelegramLinkCode() (string, error) {
+	const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+	buffer := make([]byte, 8)
+	if _, err := rand.Read(buffer); err != nil {
+		return "", err
+	}
+	code := make([]byte, len(buffer))
+	for index, value := range buffer {
+		code[index] = alphabet[int(value)%len(alphabet)]
+	}
+	return string(code), nil
+}
+
+func buildTelegramLinkInstructionsText(code, gatewayURL string, ttl time.Duration) string {
+	lines := []string{
+		"Код привязки Telegram создан.",
+		"Код: " + strings.TrimSpace(strings.ToUpper(code)),
+		"Действует: " + ttl.String(),
+		"",
+		"Подтверди привязку под своим JWT через API:",
+		"POST " + strings.TrimRight(gatewayURL, "/") + "/api/v1/notifications/telegram/link/confirm",
+		`{"code":"` + strings.TrimSpace(strings.ToUpper(code)) + `"}`,
+	}
+	return strings.Join(lines, "\n")
+}
+
+func buildTelegramLinkConfirmedText(binding telegramauth.Binding) string {
+	return fmt.Sprintf("Telegram-чат привязан.\nUser ID: %s\nРоли: %s", binding.UserID, strings.Join(binding.Roles, ", "))
+}
+
+func parseRolesHeader(raw string) []string {
+	result := make([]string, 0, 4)
+	seen := make(map[string]struct{})
+	for _, part := range strings.Split(raw, ",") {
+		role := strings.TrimSpace(part)
+		if role == "" {
+			continue
+		}
+		if _, ok := seen[role]; ok {
+			continue
+		}
+		seen[role] = struct{}{}
+		result = append(result, role)
 	}
 	return result
 }

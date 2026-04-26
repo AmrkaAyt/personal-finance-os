@@ -4,3 +4,5 @@
 bin
 tmp
 *.log
+*.exe
+tmp_*.go

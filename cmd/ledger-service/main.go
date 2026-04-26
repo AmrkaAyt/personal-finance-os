@@ -26,6 +26,7 @@ import (
 	"personal-finance-os/internal/platform/mongox"
 	"personal-finance-os/internal/platform/postgresx"
 	"personal-finance-os/internal/platform/runtime"
+	"personal-finance-os/internal/platform/secureenv"
 	"personal-finance-os/internal/platform/startupx"
 	"personal-finance-os/internal/platform/userctx"
 )
@@ -70,6 +71,12 @@ func main() {
 	processTimeout := env.Duration("PROCESSING_TIMEOUT", 2*time.Minute)
 	startupTimeout := env.Duration("STARTUP_TIMEOUT", 45*time.Second)
 	postgresDSN := env.String("POSTGRES_DSN", "postgres://finance:finance@localhost:5432/finance?sslmode=disable")
+	if err := secureenv.Enforce(serviceName, logger,
+		secureenv.RequireNonEmpty("POSTGRES_DSN", postgresDSN),
+		secureenv.RejectContains("POSTGRES_DSN", postgresDSN, "finance:finance@", "sslmode=disable"),
+	); err != nil {
+		panic(err)
+	}
 	mongoURI := env.String("MONGO_URI", "mongodb://localhost:27017")
 	mongoDatabase := env.String("MONGO_DATABASE", "finance_os")
 	parsedCollectionName := env.String("MONGO_PARSED_COLLECTION", "parsed_imports")
@@ -119,16 +126,6 @@ func main() {
 
 	if err := startupx.Retry(startupCtx, logger, "kafka broker ping", func(ctx context.Context) error {
 		return kafkax.Ping(ctx, kafkaBrokers)
-	}); err != nil {
-		panic(err)
-	}
-	if err := startupx.Retry(startupCtx, logger, "kafka ensure transaction topic", func(ctx context.Context) error {
-		return kafkax.EnsureTopic(ctx, kafkaBrokers, publishTopic, 1, 1)
-	}); err != nil {
-		panic(err)
-	}
-	if err := startupx.Retry(startupCtx, logger, "kafka ensure quarantine topic", func(ctx context.Context) error {
-		return kafkax.EnsureTopic(ctx, kafkaBrokers, quarantineTopic, 1, 1)
 	}); err != nil {
 		panic(err)
 	}
@@ -260,12 +257,13 @@ func (s *service) handleCreateTransaction(w http.ResponseWriter, r *http.Request
 func (s *service) handleListCategories(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), s.requestTimeout)
 	defer cancel()
-	if _, err := userctx.RequireAuthenticatedUserID(r); err != nil {
+	userID, err := userctx.RequireAuthenticatedUserID(r)
+	if err != nil {
 		httpx.JSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
 	}
 
-	categories, err := s.repository.ListCategories(ctx)
+	categories, err := s.repository.ListCategories(ctx, userID)
 	if err != nil {
 		httpx.JSON(w, http.StatusInternalServerError, map[string]string{"error": "internal_error"})
 		return
@@ -302,6 +300,7 @@ func (s *service) consumeParsedEvents(ctx context.Context, logger *slog.Logger) 
 		ConsumerGroup:    s.consumerGroup,
 		RetryBackoff:     s.retryBackoff,
 		MaxAttempts:      s.maxAttempts,
+		IncludePayload:   true,
 	})
 }
 

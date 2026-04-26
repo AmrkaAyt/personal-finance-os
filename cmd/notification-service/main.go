@@ -12,14 +12,19 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/redis/go-redis/v9"
 
+	"personal-finance-os/internal/notificationdigest"
+	"personal-finance-os/internal/notificationprefs"
 	"personal-finance-os/internal/platform/env"
 	"personal-finance-os/internal/platform/httpx"
 	"personal-finance-os/internal/platform/logging"
+	"personal-finance-os/internal/platform/postgresx"
 	"personal-finance-os/internal/platform/rabbitmq"
 	"personal-finance-os/internal/platform/runtime"
+	"personal-finance-os/internal/platform/secureenv"
 	"personal-finance-os/internal/platform/startupx"
 	"personal-finance-os/internal/rules"
 	"personal-finance-os/internal/telegramauth"
@@ -38,13 +43,21 @@ type service struct {
 	telegramAPIBaseURL     string
 	telegramPollingEnabled bool
 	telegramPollInterval   time.Duration
-	telegramDefaultUserID  string
-	authServiceURL         string
+	telegramLinkCodeTTL    time.Duration
+	apiGatewayExternalURL  string
 	ingestServiceURL       string
 	parserServiceURL       string
 	analyticsServiceURL    string
 	ledgerServiceURL       string
+	postgresPool           *pgxpool.Pool
+	prefsStore             notificationprefs.Store
 	authStore              telegramauth.Store
+	linkStore              telegramauth.LinkStore
+	digestStore            notificationdigest.Store
+	digestEnabled          bool
+	digestWindow           time.Duration
+	digestPollInterval     time.Duration
+	digestMaxItems         int
 	allowedTelegramChatIDs map[string]struct{}
 	botState               telegramBotState
 	pollMu                 sync.Mutex
@@ -78,6 +91,13 @@ func main() {
 	dlq := env.String("RABBIT_NOTIFICATION_DLQ", "send.telegram.dlq")
 	requestTimeout := env.Duration("REQUEST_TIMEOUT", 10*time.Second)
 	startupTimeout := env.Duration("STARTUP_TIMEOUT", 45*time.Second)
+	postgresDSN := env.String("POSTGRES_DSN", "postgres://finance:finance@localhost:5432/finance?sslmode=disable")
+	if err := secureenv.Enforce(serviceName, logger,
+		secureenv.RequireNonEmpty("POSTGRES_DSN", postgresDSN),
+		secureenv.RejectContains("POSTGRES_DSN", postgresDSN, "finance:finance@", "sslmode=disable"),
+	); err != nil {
+		panic(err)
+	}
 
 	startupCtx, cancel := context.WithTimeout(context.Background(), startupTimeout)
 	defer cancel()
@@ -108,16 +128,29 @@ func main() {
 	}
 	_ = channel.Close()
 
+	var redisClient *redis.Client
 	authStore := telegramauth.Store(telegramauth.NewMemoryStore())
 	if redisAddr := env.String("REDIS_ADDR", ""); redisAddr != "" {
-		client := redis.NewClient(&redis.Options{Addr: redisAddr})
+		redisClient = redis.NewClient(&redis.Options{Addr: redisAddr})
 		if err := startupx.Retry(startupCtx, logger, "redis ping", func(ctx context.Context) error {
-			return client.Ping(ctx).Err()
+			return redisClient.Ping(ctx).Err()
 		}); err != nil {
 			panic(err)
 		}
-		authStore = telegramauth.NewRedisStore(client, env.String("TELEGRAM_BINDINGS_PREFIX", "telegram:bindings"), env.Duration("TELEGRAM_BINDINGS_TTL", 365*24*time.Hour))
+		authStore = telegramauth.NewRedisStore(redisClient, env.String("TELEGRAM_BINDINGS_PREFIX", "telegram:bindings"), env.Duration("TELEGRAM_BINDINGS_TTL", 365*24*time.Hour))
 		logger.Info("redis-backed telegram auth store configured", "addr", redisAddr)
+	}
+	postgresPool, err := startupx.RetryValue(startupCtx, logger, "postgres connect", func(ctx context.Context) (*pgxpool.Pool, error) {
+		return postgresx.Connect(ctx, postgresDSN)
+	})
+	if err != nil {
+		panic(err)
+	}
+	defer postgresPool.Close()
+	digestStore := notificationdigest.Store(notificationdigest.NewMemoryStore())
+	if redisClient != nil {
+		digestStore = notificationdigest.NewRedisStore(redisClient, env.String("NOTIFICATION_DIGEST_PREFIX", "notification:digest"))
+		logger.Info("redis-backed notification digest store configured")
 	}
 
 	svc := &service{
@@ -135,13 +168,21 @@ func main() {
 		telegramAPIBaseURL:     strings.TrimRight(env.String("TELEGRAM_API_BASE_URL", "https://api.telegram.org"), "/"),
 		telegramPollingEnabled: env.Bool("TELEGRAM_POLLING_ENABLED", true),
 		telegramPollInterval:   env.Duration("TELEGRAM_POLL_INTERVAL", 5*time.Second),
-		telegramDefaultUserID:  env.String("TELEGRAM_DEFAULT_USER_ID", "user-demo"),
-		authServiceURL:         strings.TrimRight(env.String("AUTH_SERVICE_URL", "http://localhost:8081"), "/"),
+		telegramLinkCodeTTL:    env.Duration("TELEGRAM_LINK_CODE_TTL", 10*time.Minute),
+		apiGatewayExternalURL:  strings.TrimRight(env.String("API_GATEWAY_EXTERNAL_URL", "http://localhost:8080"), "/"),
 		ingestServiceURL:       strings.TrimRight(env.String("INGEST_SERVICE_URL", "http://localhost:8082"), "/"),
 		parserServiceURL:       strings.TrimRight(env.String("PARSER_SERVICE_URL", "http://localhost:8083"), "/"),
 		analyticsServiceURL:    strings.TrimRight(env.String("ANALYTICS_SERVICE_URL", "http://localhost:8087"), "/"),
 		ledgerServiceURL:       strings.TrimRight(env.String("LEDGER_SERVICE_URL", "http://localhost:8084"), "/"),
+		postgresPool:           postgresPool,
+		prefsStore:             notificationprefs.NewPostgresStore(postgresPool),
 		authStore:              authStore,
+		linkStore:              authStore.(telegramauth.LinkStore),
+		digestStore:            digestStore,
+		digestEnabled:          env.Bool("NOTIFICATION_DIGEST_ENABLED", true),
+		digestWindow:           env.Duration("NOTIFICATION_DIGEST_WINDOW", 15*time.Second),
+		digestPollInterval:     env.Duration("NOTIFICATION_DIGEST_POLL_INTERVAL", 5*time.Second),
+		digestMaxItems:         env.Int("NOTIFICATION_DIGEST_MAX_ITEMS", 20),
 	}
 	svc.allowedTelegramChatIDs = parseAllowedChatIDs(env.String("TELEGRAM_ALLOWED_CHAT_IDS", ""), svc.defaultChatID)
 
@@ -150,6 +191,9 @@ func main() {
 	mux.HandleFunc("GET /api/v1/notifications/status", svc.handleStatus)
 	mux.HandleFunc("POST /api/v1/notifications/telegram/demo", svc.handleDemo)
 	mux.HandleFunc("POST /api/v1/notifications/telegram/poll/once", svc.handleTelegramPollOnce)
+	mux.HandleFunc("POST /api/v1/notifications/telegram/link/confirm", svc.handleTelegramLinkConfirm)
+	mux.HandleFunc("GET /api/v1/notifications/preferences", svc.handlePreferencesGet)
+	mux.HandleFunc("PUT /api/v1/notifications/preferences", svc.handlePreferencesPut)
 
 	if err := runtime.Run(runtime.Config{
 		Name:     serviceName,
@@ -158,6 +202,7 @@ func main() {
 		Logger:   logger,
 		Background: []runtime.BackgroundFunc{
 			svc.consumeNotifications,
+			svc.flushDigests,
 			svc.pollTelegramUpdates,
 		},
 	}); err != nil {
@@ -166,6 +211,11 @@ func main() {
 }
 
 func (s *service) handleStatus(w http.ResponseWriter, _ *http.Request) {
+	pendingDigests, err := s.pendingDigestCount(context.Background())
+	if err != nil {
+		s.logger.Error("failed to read notification digest count", "error", err)
+		pendingDigests = -1
+	}
 	httpx.JSON(w, http.StatusOK, map[string]any{
 		"queue":                    s.queue,
 		"dlq":                      s.dlq,
@@ -175,8 +225,15 @@ func (s *service) handleStatus(w http.ResponseWriter, _ *http.Request) {
 		"telegram_polling_enabled": s.telegramPollingEnabled,
 		"telegram_poll_interval":   s.telegramPollInterval.String(),
 		"telegram_allowed_chats":   len(s.allowedTelegramChatIDs),
-		"telegram_default_user_id": s.telegramDefaultUserID,
-		"auth_service_url":         s.authServiceURL,
+		"telegram_link_code_ttl":   s.telegramLinkCodeTTL.String(),
+		"notification_digest": map[string]any{
+			"enabled":       s.digestEnabled,
+			"window":        s.digestWindow.String(),
+			"poll_interval": s.digestPollInterval.String(),
+			"max_items":     s.digestMaxItems,
+			"pending":       pendingDigests,
+		},
+		"api_gateway_external_url": s.apiGatewayExternalURL,
 		"ingest_service_url":       s.ingestServiceURL,
 		"parser_service_url":       s.parserServiceURL,
 		"analytics_service_url":    s.analyticsServiceURL,
@@ -219,6 +276,65 @@ func (s *service) handleTelegramPollOnce(w http.ResponseWriter, r *http.Request)
 	httpx.JSON(w, http.StatusOK, map[string]any{
 		"processed_updates": processed,
 		"bot_state":         s.botState.snapshot(),
+	})
+}
+
+type telegramLinkConfirmRequest struct {
+	Code string `json:"code"`
+}
+
+func (s *service) handleTelegramLinkConfirm(w http.ResponseWriter, r *http.Request) {
+	userID := strings.TrimSpace(r.Header.Get("X-User-ID"))
+	if userID == "" {
+		httpx.JSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	var request telegramLinkConfirmRequest
+	if err := httpx.ReadJSON(r, &request); err != nil {
+		httpx.JSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+		return
+	}
+
+	code := strings.TrimSpace(strings.ToUpper(request.Code))
+	if code == "" {
+		httpx.JSON(w, http.StatusBadRequest, map[string]string{"error": "code is required"})
+		return
+	}
+
+	pending, ok, err := s.linkStore.ConsumePending(r.Context(), code)
+	if err != nil {
+		s.logger.Error("failed to consume telegram link code", "error", err)
+		httpx.JSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to confirm telegram link"})
+		return
+	}
+	if !ok {
+		httpx.JSON(w, http.StatusNotFound, map[string]string{"error": "link code is invalid or expired"})
+		return
+	}
+
+	binding := telegramauth.Binding{
+		ChatID:   strings.TrimSpace(pending.ChatID),
+		UserID:   userID,
+		Username: userID,
+		Roles:    parseRolesHeader(r.Header.Get("X-User-Roles")),
+		BoundAt:  time.Now().UTC(),
+	}
+	if err := s.authStore.Save(r.Context(), binding); err != nil {
+		s.logger.Error("failed to save telegram binding", "chat_id", binding.ChatID, "user_id", binding.UserID, "error", err)
+		httpx.JSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save telegram binding"})
+		return
+	}
+	if err := s.sendTelegramText(r.Context(), binding.ChatID, buildTelegramLinkConfirmedText(binding)); err != nil {
+		s.logger.Error("failed to send telegram link confirmation", "chat_id", binding.ChatID, "user_id", binding.UserID, "error", err)
+	}
+
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"status":   "linked",
+		"chat_id":  binding.ChatID,
+		"user_id":  binding.UserID,
+		"roles":    binding.Roles,
+		"bound_at": binding.BoundAt,
 	})
 }
 
@@ -270,7 +386,24 @@ func (s *service) handleDelivery(ctx context.Context, channel *amqp.Channel, del
 	operationCtx, cancel := context.WithTimeout(ctx, s.requestTimeout)
 	defer cancel()
 
-	err := s.deliverTelegram(operationCtx, job)
+	decision, dueAt, err := s.deliveryDecision(operationCtx, job)
+	if err != nil {
+		return err
+	}
+	switch decision {
+	case deliverySuppress:
+		s.logger.Info("notification suppressed by preferences", "alert_id", job.Alert.ID, "type", job.Alert.Type, "user_id", job.Alert.UserID)
+		return nil
+	case deliveryBatch:
+		digest, err := s.enqueueDigestAt(operationCtx, job, dueAt)
+		if err != nil {
+			return err
+		}
+		s.logger.Info("notification batched", "alert_id", job.Alert.ID, "digest_key", digest.Key, "items", len(digest.Items), "due_at", digest.DueAt)
+		return nil
+	}
+
+	err = s.deliverTelegram(operationCtx, job)
 	if err == nil {
 		s.logger.Info("notification delivered", "alert_id", job.Alert.ID, "attempt", job.Attempt, "channel", job.Channel, "dry_run", job.IsDryRun)
 		return nil

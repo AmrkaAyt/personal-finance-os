@@ -1,7 +1,7 @@
 # Personal Finance OS: Current Implementation Status
 
 Version: 0.1.0  
-Date: 2026-03-17  
+Date: 2026-04-26
 Status: V1 core implemented
 
 ## 1. Purpose
@@ -30,6 +30,7 @@ The project already contains a working V1 backend platform with:
 - analytics projections,
 - realtime delivery,
 - Docker-based local environment,
+- one-shot Kafka bootstrap outside runtime services,
 - automated tests and CI baseline.
 
 In practical terms, the following end-to-end chain works:
@@ -156,8 +157,7 @@ What it does now:
 - issues JWT access and refresh token pairs,
 - stores refresh sessions in Redis,
 - rotates refresh sessions,
-- returns current user info,
-- provides internal identity verification used by Telegram login binding.
+- returns current user info.
 
 ### 4.3 ingest-service
 
@@ -256,11 +256,14 @@ What it does now:
 - consumes Telegram delivery jobs from RabbitMQ,
 - retries failed deliveries,
 - routes exhausted failures to DLQ,
+- batches non-critical alert jobs into digest notifications before Telegram delivery,
+- applies user-level notification preferences from PostgreSQL,
+- supports quiet-window-based deferral and per-type suppression,
 - sends real Telegram messages when bot token/chat configuration is present,
 - supports Telegram long polling,
 - supports Russian bot responses,
 - supports Telegram login binding:
-  - `/login`
+  - `/link`
   - `/logout`
   - `/whoami`
 - supports reporting commands:
@@ -271,7 +274,8 @@ What it does now:
   - `/transactions`
 - accepts Telegram document uploads,
 - forwards supported files to `ingest-service`,
-- waits for parsed result and sends follow-up parse summary back to the chat.
+- waits for parsed result and sends follow-up parse summary back to the chat,
+- exposes notification preferences API.
 
 ### 4.8 analytics-writer
 
@@ -401,7 +405,8 @@ Relevant code:
 Implemented now:
 - raw statement content is encrypted before storing in MongoDB,
 - encryption metadata is stored with `content_kid`,
-- current and legacy encryption keys are supported through keyring configuration,
+- current and legacy encryption keys are supported through secret refs and keyring configuration,
+- local mode supports `env:` refs and non-local policy can reject env-backed key material,
 - one-shot maintenance command migrates legacy plaintext imports and scrubs historical `raw_line` leftovers,
 - parser decrypts raw content only for processing,
 - new parsed projections do not keep `raw_line`,
@@ -417,11 +422,10 @@ Relevant code:
 ### 6.3 Current Security Limits
 
 Not finished yet:
-- categories are still global, not tenant-scoped,
 - normalized financial data in PostgreSQL and ClickHouse is not field-encrypted,
-- encryption keys are still env-managed rather than backed by a dedicated secret/KMS policy,
-- startup still performs some schema/topic provisioning,
-- production-hardening of insecure defaults is not fully enforced.
+- encryption keys are still secret-ref/file managed rather than backed by a dedicated cloud KMS,
+- runtime still lacks stronger secret/KMS ownership,
+- quarantine replay exists as operator tooling, but there is no full replay approval/ack workflow.
 
 ## 7. Current Data Model by Storage
 
@@ -429,7 +433,8 @@ Not finished yet:
 
 Currently used for:
 - canonical transactions,
-- categories,
+- system categories and tenant-scoped user categories,
+- notification preferences,
 - recurring detection queries.
 
 ### 7.2 MongoDB
@@ -449,6 +454,7 @@ Current raw import protection:
 Currently used for:
 - refresh sessions,
 - Telegram auth binding,
+- Telegram pending link codes,
 - rule-engine state,
 - realtime presence and subscriptions.
 
@@ -491,7 +497,7 @@ The bot can already:
 
 Supported commands:
 - `/help`
-- `/login <username> <password>`
+- `/link`
 - `/logout`
 - `/whoami`
 - `/status`
@@ -502,9 +508,8 @@ Supported commands:
 ### 8.2 Current Constraints
 
 Still limited in V1:
-- password-based login in chat is technical, not final-grade auth UX,
-- no magic-link or device-link flow yet,
-- no chat-to-user self-service onboarding flow,
+- link confirmation is API-driven rather than web-driven,
+- no richer self-service onboarding than one-time code + API confirm,
 - no advanced planning commands,
 - no Google Calendar integration.
 
@@ -517,10 +522,14 @@ Implemented local stack in:
 
 Includes:
 - `migrate`
+- `kafka-bootstrap`
+- `quarantine-operator`
+- `kafka-exporter`
 - `postgres`
 - `redis`
 - `mongodb`
 - `rabbitmq`
+- `rabbitmq-exporter`
 - `kafka`
 - `clickhouse`
 - `prometheus`
@@ -541,18 +550,25 @@ Documented in:
 
 Implemented cross-cutting runtime pieces:
 - versioned migrations for PostgreSQL and ClickHouse,
+- one-shot Kafka topic bootstrap,
 - one-shot sensitive-data maintenance,
+- one-shot quarantine operator tooling,
 - startup retry/backoff,
 - graceful shutdown,
 - structured logging,
+- non-local fail-fast for security-critical env defaults,
 - health checks,
+- Grafana datasource and dashboard provisioning,
 - WebSocket hub,
 - env loading.
 
 Relevant code:
 - [cmd/migrate/main.go](../cmd/migrate/main.go)
+- [cmd/kafka-bootstrap/main.go](../cmd/kafka-bootstrap/main.go)
+- [cmd/quarantine-operator/main.go](../cmd/quarantine-operator/main.go)
 - [cmd/sensitive-data-maintenance/main.go](../cmd/sensitive-data-maintenance/main.go)
 - [internal/platform/runtime/runtime.go](../internal/platform/runtime/runtime.go)
+- [internal/platform/secureenv/secureenv.go](../internal/platform/secureenv/secureenv.go)
 - [internal/platform/migratex/migrate.go](../internal/platform/migratex/migrate.go)
 - [internal/platform/startupx/retry.go](../internal/platform/startupx/retry.go)
 - [internal/platform/logging/logger.go](../internal/platform/logging/logger.go)
@@ -567,6 +583,8 @@ The repository already contains:
 - unit tests for Kafka consumer quarantine/retry behavior,
 - service-level tests for gateway and ledger handlers,
 - integration tests through gateway for main runtime paths,
+- `k6` load-test scenarios for auth, writes, reads, imports, websocket churn, and mixed traffic,
+- a captured mixed-traffic load-test baseline document and exported summary,
 - GitHub Actions CI baseline.
 
 Relevant files:
@@ -576,6 +594,8 @@ Relevant files:
 - [internal/rules/engine_test.go](../internal/rules/engine_test.go)
 - [internal/platform/cryptox/cryptox_test.go](../internal/platform/cryptox/cryptox_test.go)
 - [internal/platform/kafkax/consumer_test.go](../internal/platform/kafkax/consumer_test.go)
+- [loadtests/README.md](../loadtests/README.md)
+- [load-test-baseline.md](load-test-baseline.md)
 - [.github/workflows/ci.yml](../.github/workflows/ci.yml)
 
 ### 10.2 Runtime Verification Already Performed
@@ -583,7 +603,9 @@ Relevant files:
 Runtime smoke already confirmed:
 - all services come up healthy in Docker,
 - schema can be created by one-shot `migrate` command before service startup,
+- Kafka topics are provisioned by one-shot `kafka-bootstrap` before Kafka-dependent services start,
 - one-shot `sensitive-data-maintenance` can migrate legacy plaintext raw imports and scrub historical raw fragments,
+- one-shot `quarantine-operator` can summarize and dry-run replay quarantined events,
 - direct unauthenticated access to `ledger-service` is rejected,
 - gateway strips malicious `user_id` query overrides,
 - manual transaction create enforces strict contract,
@@ -593,25 +615,34 @@ Runtime smoke already confirmed:
 - new raw imports are stored encrypted in MongoDB,
 - historical raw imports now store `content_kid` and no longer keep plaintext `content`,
 - malformed Kafka payloads are quarantined into `event.quarantine` while consumers remain healthy,
+- `api-gateway` fails fast in `APP_ENV=production` with insecure `JWT_SECRET`,
+- `auth-service` fails fast in `APP_ENV=production` when seeded demo users remain enabled,
+- categories are tenant-scoped and user-derived categories no longer leak globally,
 - Telegram bot accepts files and returns parsing summary,
+- Telegram bot no longer requires password-in-chat login and now uses one-time link code confirmation under JWT,
+- non-critical alert jobs are digested before Telegram delivery and runtime batching is confirmed,
+- notification preferences API persists settings in PostgreSQL and runtime suppression/quiet-window deferral is confirmed,
+- new quarantine events include payload for replay tooling,
+- Grafana provisions the `Personal Finance OS Overview` dashboard automatically,
+- Prometheus successfully scrapes gateway, ledger, Kafka exporter, RabbitMQ exporter, and the rest of the stack,
+- a stable mixed `k6` baseline is captured in `docs/load-test-baseline.md`,
 - analytics and realtime path were previously validated,
 - Telegram outbound delivery works with real bot credentials.
 
 ## 11. What Is Implemented Partially
 
 Implemented, but still not final-grade:
-- alert batching and digest behavior,
+- alert batching and notification preferences exist, but policy is still Telegram-specific rather than a full notification rules system,
 - Telegram auth UX,
 - PDF support only for text-based files,
 - category heuristics are still heuristic, not a full classification system,
 - analytics schema is projection-oriented and still minimal,
-- recurring detection is heuristic and exact-match based.
+- recurring detection is heuristic and exact-match based,
+- one mixed-load baseline is captured, but stepped and long-soak baselines are not yet documented.
 
 ## 12. What Is Not Implemented Yet
 
 Still out of current implementation:
-- Kafka topic provisioning still lives in runtime startup path,
-- tenant-scoped categories,
 - OCR for scanned PDFs,
 - Google Calendar sync,
 - advanced budgeting/planning workflows,
@@ -624,8 +655,10 @@ Still out of current implementation:
 
 The next technical steps should be:
 
-1. remove Kafka topic provisioning from runtime startup path,
-2. add fail-fast handling for insecure defaults outside local development,
-3. split `system categories` from `user categories`,
-4. replace Telegram password login with safer link/code binding,
-5. add alert digesting and stronger anti-spam delivery policy.
+1. formalize event contracts and add compatibility tests for Kafka payloads,
+2. add quarantine replay approval/commit workflows beyond dry-run,
+3. expand observability with richer service metrics and tracing,
+4. capture stepped load baselines and longer soak runs,
+5. batch-optimize the ledger import/upsert path,
+6. improve Telegram device-link UX,
+7. add OCR path for scanned PDFs.

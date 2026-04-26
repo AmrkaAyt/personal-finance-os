@@ -3,7 +3,6 @@ package ledger
 import (
 	"context"
 	"errors"
-	"slices"
 	"strings"
 	"time"
 
@@ -316,13 +315,37 @@ func scanTransactions(rows pgx.Rows, limit int) ([]Transaction, error) {
 	return transactions, rows.Err()
 }
 
-func (r *Repository) ListCategories(ctx context.Context) ([]string, error) {
-	rows, err := r.pool.Query(ctx, `SELECT name FROM categories ORDER BY name`)
+func (r *Repository) ListCategories(ctx context.Context, userID string) ([]string, error) {
+	trimmedUserID := strings.TrimSpace(userID)
+	if trimmedUserID == "" {
+		rows, err := r.pool.Query(ctx, `
+SELECT DISTINCT name
+FROM categories
+WHERE user_id IS NULL
+ORDER BY name
+`)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		return scanCategoryNames(rows)
+	}
+
+	rows, err := r.pool.Query(ctx, `
+SELECT DISTINCT name
+FROM categories
+WHERE user_id IS NULL OR user_id = $1
+ORDER BY name
+`, trimmedUserID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
+	return scanCategoryNames(rows)
+}
+
+func scanCategoryNames(rows pgx.Rows) ([]string, error) {
 	categories := make([]string, 0, len(DefaultCategories))
 	for rows.Next() {
 		var category string
@@ -338,37 +361,63 @@ func (r *Repository) ListCategories(ctx context.Context) ([]string, error) {
 }
 
 func (r *Repository) ensureCategories(ctx context.Context, db dbtx, transactions []Transaction) error {
-	if len(transactions) == 0 {
-		return nil
-	}
-
-	names := make([]string, 0, len(transactions))
-	for _, transaction := range transactions {
-		if transaction.Category == "" || slices.Contains(names, transaction.Category) {
-			continue
-		}
-		names = append(names, transaction.Category)
-	}
-	if len(names) == 0 {
+	scopedCategories := collectDerivedCategories(transactions)
+	if len(scopedCategories) == 0 {
 		return nil
 	}
 
 	batch := &pgx.Batch{}
-	for _, name := range names {
+	for _, item := range scopedCategories {
 		batch.Queue(`
-INSERT INTO categories (name, kind)
-VALUES ($1, 'derived')
-ON CONFLICT (name) DO NOTHING
-`, name)
+INSERT INTO categories (user_id, name, kind)
+VALUES ($1, $2, 'derived')
+ON CONFLICT DO NOTHING
+`, item.userID, item.name)
 	}
 	results := db.SendBatch(ctx, batch)
-	for range names {
+	for range scopedCategories {
 		if _, err := results.Exec(); err != nil {
 			_ = results.Close()
 			return err
 		}
 	}
 	return results.Close()
+}
+
+type scopedCategory struct {
+	userID string
+	name   string
+}
+
+func collectDerivedCategories(transactions []Transaction) []scopedCategory {
+	if len(transactions) == 0 {
+		return nil
+	}
+
+	systemCategories := make(map[string]struct{}, len(DefaultCategories))
+	for _, name := range DefaultCategories {
+		systemCategories[strings.TrimSpace(name)] = struct{}{}
+	}
+
+	seen := make(map[string]struct{}, len(transactions))
+	result := make([]scopedCategory, 0, len(transactions))
+	for _, transaction := range transactions {
+		name := strings.TrimSpace(transaction.Category)
+		userID := strings.TrimSpace(transaction.UserID)
+		if name == "" || userID == "" {
+			continue
+		}
+		if _, isSystem := systemCategories[name]; isSystem {
+			continue
+		}
+		key := userID + "|" + name
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, scopedCategory{userID: userID, name: name})
+	}
+	return result
 }
 
 func (r *Repository) enqueueOutboxEvents(ctx context.Context, db dbtx, topic string, transactions []Transaction) error {

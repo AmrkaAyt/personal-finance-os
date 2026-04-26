@@ -350,7 +350,7 @@ func normalizeCategory(value string) string {
 
 func isImportedTransaction(sourceImportID string) bool {
 	normalized := strings.TrimSpace(strings.ToLower(sourceImportID))
-	return normalized != "" && normalized != "manual"
+	return normalized != "" && normalized != "manual" && !strings.HasPrefix(normalized, "manual:")
 }
 
 func normalizeMerchant(value string) string {

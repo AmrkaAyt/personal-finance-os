@@ -81,21 +81,6 @@ func main() {
 	}); err != nil {
 		panic(err)
 	}
-	if err := startupx.Retry(startupCtx, logger, "kafka ensure transaction topic", func(ctx context.Context) error {
-		return kafkax.EnsureTopic(ctx, kafkaBrokers, transactionTopic, 1, 1)
-	}); err != nil {
-		panic(err)
-	}
-	if err := startupx.Retry(startupCtx, logger, "kafka ensure alert topic", func(ctx context.Context) error {
-		return kafkax.EnsureTopic(ctx, kafkaBrokers, alertTopic, 1, 1)
-	}); err != nil {
-		panic(err)
-	}
-	if err := startupx.Retry(startupCtx, logger, "kafka ensure quarantine topic", func(ctx context.Context) error {
-		return kafkax.EnsureTopic(ctx, kafkaBrokers, quarantineTopic, 1, 1)
-	}); err != nil {
-		panic(err)
-	}
 
 	presenceStore := realtime.NewRedisStore(redisClient, redisPrefix, stateTTL)
 	hub := ws.NewHub(logger, ws.WithHooks(ws.Hooks{
@@ -233,6 +218,7 @@ func (s *service) consumeTransactions(ctx context.Context, logger *slog.Logger) 
 		ConsumerGroup:    s.transactionGroup,
 		RetryBackoff:     s.retryBackoff,
 		MaxAttempts:      s.maxAttempts,
+		IncludePayload:   true,
 	})
 }
 
@@ -247,6 +233,7 @@ func (s *service) consumeAlerts(ctx context.Context, logger *slog.Logger) error 
 		ConsumerGroup:    s.alertGroup,
 		RetryBackoff:     s.retryBackoff,
 		MaxAttempts:      s.maxAttempts,
+		IncludePayload:   true,
 	})
 }
 

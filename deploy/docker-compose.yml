@@ -87,6 +87,18 @@ services:
       retries: 10
       start_period: 10s
 
+  rabbitmq-exporter:
+    image: kbudde/rabbitmq-exporter:latest
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      RABBIT_URL: http://rabbitmq:15672
+      RABBIT_USER: guest
+      RABBIT_PASSWORD: guest
+      PUBLISH_PORT: 9419
+      OUTPUT_FORMAT: JSON
+
   kafka:
     image: apache/kafka:3.9.2
     ports:
@@ -111,6 +123,15 @@ services:
       retries: 10
       start_period: 20s
 
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:latest
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command:
+      - --kafka.server=kafka:9092
+      - --web.listen-address=:9308
+
   ingest-service:
     <<: *service-defaults
     env_file:
@@ -128,6 +149,8 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      kafka-bootstrap:
+        condition: service_completed_successfully
     ports:
       - "${INGEST_SERVICE_PORT:-8082}:8082"
     environment:
@@ -159,6 +182,8 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      kafka-bootstrap:
+        condition: service_completed_successfully
     ports:
       - "${PARSER_SERVICE_PORT:-8083}:8083"
     environment:
@@ -190,6 +215,8 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      kafka-bootstrap:
+        condition: service_completed_successfully
       migrate:
         condition: service_completed_successfully
     ports:
@@ -219,6 +246,8 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
+      kafka-bootstrap:
+        condition: service_completed_successfully
       rabbitmq:
         condition: service_healthy
       redis:
@@ -248,19 +277,21 @@ services:
       args:
         SERVICE: notification-service
     depends_on:
-      auth-service:
-        condition: service_healthy
       rabbitmq:
         condition: service_healthy
       redis:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     ports:
       - "${NOTIFICATION_SERVICE_PORT:-8086}:8086"
     environment:
       <<: *runtime-env
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
       REDIS_ADDR: redis:6379
-      AUTH_SERVICE_URL: http://auth-service:8081
+      POSTGRES_DSN: postgres://${POSTGRES_USER:-finance}:${POSTGRES_PASSWORD:-finance}@postgres:5432/${POSTGRES_DB:-finance}?sslmode=disable
       INGEST_SERVICE_URL: http://ingest-service:8082
       PARSER_SERVICE_URL: http://parser-service:8083
       ANALYTICS_SERVICE_URL: http://analytics-writer:8087
@@ -349,6 +380,8 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      kafka-bootstrap:
+        condition: service_completed_successfully
       migrate:
         condition: service_completed_successfully
     ports:
@@ -377,6 +410,8 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
+      kafka-bootstrap:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     ports:
@@ -438,6 +473,15 @@ services:
 
   prometheus:
     image: prom/prometheus:v2.53.1
+    depends_on:
+      api-gateway:
+        condition: service_healthy
+      ledger-service:
+        condition: service_healthy
+      kafka-exporter:
+        condition: service_started
+      rabbitmq-exporter:
+        condition: service_started
     ports:
       - "${PROMETHEUS_PORT:-9090}:9090"
     volumes:
@@ -445,12 +489,71 @@ services:
 
   grafana:
     image: grafana/grafana:11.1.0
+    depends_on:
+      prometheus:
+        condition: service_started
     ports:
       - "${GRAFANA_PORT:-3000}:3000"
     environment:
       GF_SECURITY_ADMIN_PASSWORD: admin
     volumes:
       - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+
+  kafka-bootstrap:
+    <<: *service-defaults
+    restart: "no"
+    env_file:
+      - ../.env
+      - ../env/kafka-bootstrap.env
+    build:
+      context: ..
+      dockerfile: deploy/docker/service.Dockerfile
+      args:
+        SERVICE: kafka-bootstrap
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      <<: *runtime-env
+      KAFKA_BROKERS: kafka:9092
+
+  k6:
+    image: grafana/k6:latest
+    profiles: ["loadtest"]
+    env_file:
+      - ../.env
+      - ../env/k6.env
+    depends_on:
+      api-gateway:
+        condition: service_healthy
+    working_dir: /work
+    volumes:
+      - ../loadtests:/work/loadtests
+    entrypoint: ["k6"]
+    command: ["run", "/work/loadtests/k6/scenarios/mixed-v1.js"]
+
+  quarantine-operator:
+    <<: *service-defaults
+    restart: "no"
+    profiles: ["tools"]
+    env_file:
+      - ../.env
+      - ../env/quarantine-operator.env
+    build:
+      context: ..
+      dockerfile: deploy/docker/service.Dockerfile
+      args:
+        SERVICE: quarantine-operator
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka-bootstrap:
+        condition: service_completed_successfully
+    environment:
+      <<: *runtime-env
+      KAFKA_BROKERS: kafka:9092
 
 volumes:
   postgres-data:

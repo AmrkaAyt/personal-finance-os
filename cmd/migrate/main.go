@@ -16,6 +16,7 @@ import (
 	"personal-finance-os/internal/platform/logging"
 	"personal-finance-os/internal/platform/migratex"
 	"personal-finance-os/internal/platform/postgresx"
+	"personal-finance-os/internal/platform/secureenv"
 	"personal-finance-os/internal/platform/startupx"
 )
 
@@ -28,12 +29,21 @@ func main() {
 	startupTimeout := env.Duration("STARTUP_TIMEOUT", time.Minute)
 	root := env.String("MIGRATIONS_ROOT", ".")
 	target := strings.ToLower(env.String("MIGRATE_TARGET", "all"))
+	postgresDSN := env.String("POSTGRES_DSN", "postgres://finance:finance@localhost:5432/finance?sslmode=disable")
+	clickhouseDSN := env.String("CLICKHOUSE_DSN", "http://finance:finance@localhost:8123")
+	if err := secureenv.Enforce(serviceName, logger,
+		secureenv.RequireNonEmpty("POSTGRES_DSN", postgresDSN),
+		secureenv.RejectContains("POSTGRES_DSN", postgresDSN, "finance:finance@", "sslmode=disable"),
+		secureenv.RequireNonEmpty("CLICKHOUSE_DSN", clickhouseDSN),
+		secureenv.RejectContains("CLICKHOUSE_DSN", clickhouseDSN, "finance:finance@", "localhost:8123"),
+	); err != nil {
+		panic(err)
+	}
 
 	startupCtx, cancel := context.WithTimeout(context.Background(), startupTimeout)
 	defer cancel()
 
 	if shouldRun(target, "postgres") {
-		postgresDSN := env.String("POSTGRES_DSN", "postgres://finance:finance@localhost:5432/finance?sslmode=disable")
 		pool, err := startupx.RetryValue(startupCtx, logger, "postgres connect for migrations", func(ctx context.Context) (*pgxpool.Pool, error) {
 			return postgresx.Connect(ctx, postgresDSN)
 		})
@@ -48,7 +58,6 @@ func main() {
 	}
 
 	if shouldRun(target, "clickhouse") {
-		clickhouseDSN := env.String("CLICKHOUSE_DSN", "http://finance:finance@localhost:8123")
 		clickhouseDatabase := sanitizeIdentifier(env.String("CLICKHOUSE_DATABASE", "finance_os"))
 		client, err := clickhousex.New(clickhouseDSN, requestTimeout)
 		if err != nil {

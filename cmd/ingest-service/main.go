@@ -25,6 +25,8 @@ import (
 	"personal-finance-os/internal/platform/mongox"
 	"personal-finance-os/internal/platform/rabbitmq"
 	"personal-finance-os/internal/platform/runtime"
+	"personal-finance-os/internal/platform/secretx"
+	"personal-finance-os/internal/platform/secureenv"
 	"personal-finance-os/internal/platform/startupx"
 	"personal-finance-os/internal/platform/userctx"
 )
@@ -59,10 +61,28 @@ func main() {
 	parseQueue := env.String("RABBIT_PARSE_QUEUE", "parse.statement")
 	kafkaBrokers := env.Strings("KAFKA_BROKERS", []string{"localhost:9092"})
 	uploadedTopic := env.String("KAFKA_IMPORT_TOPIC", "statement.uploaded")
+	encryptionKeyID := env.String("DATA_ENCRYPTION_KEY_ID", "local-v1")
+	encryptionKeyRef := secretx.RefOrEnv(env.String("DATA_ENCRYPTION_KEY_REF", ""), "DATA_ENCRYPTION_KEY_B64")
+	legacyKeysRef := secretx.RefOrEnv(env.String("DATA_ENCRYPTION_LEGACY_KEYS_REF", ""), "DATA_ENCRYPTION_LEGACY_KEYS")
+	if err := secureenv.Enforce(serviceName, logger,
+		secureenv.RequireNonEmpty("DATA_ENCRYPTION_KEY_ID", encryptionKeyID),
+		secureenv.RequireNonEmpty("DATA_ENCRYPTION_KEY_REF", encryptionKeyRef),
+		secureenv.RejectPrefix("DATA_ENCRYPTION_KEY_REF", encryptionKeyRef, "env:"),
+	); err != nil {
+		panic(err)
+	}
+	encryptionKey, err := secretx.Resolve(encryptionKeyRef)
+	if err != nil {
+		panic(err)
+	}
+	legacyKeys, err := secretx.Resolve(legacyKeysRef)
+	if err != nil {
+		panic(err)
+	}
 	keyring, err := cryptox.NewKeyring(
-		env.String("DATA_ENCRYPTION_KEY_ID", "local-v1"),
-		env.String("DATA_ENCRYPTION_KEY_B64", ""),
-		env.String("DATA_ENCRYPTION_LEGACY_KEYS", ""),
+		encryptionKeyID,
+		encryptionKey,
+		legacyKeys,
 	)
 	if err != nil {
 		panic(err)
@@ -117,11 +137,6 @@ func main() {
 
 	if err := startupx.Retry(startupCtx, logger, "kafka broker ping", func(ctx context.Context) error {
 		return kafkax.Ping(ctx, kafkaBrokers)
-	}); err != nil {
-		panic(err)
-	}
-	if err := startupx.Retry(startupCtx, logger, "kafka ensure upload topic", func(ctx context.Context) error {
-		return kafkax.EnsureTopic(ctx, kafkaBrokers, uploadedTopic, 1, 1)
 	}); err != nil {
 		panic(err)
 	}
@@ -360,7 +375,16 @@ func (s *service) emitUploadEvent(ctx context.Context, item imports.RawImport, s
 func (s *service) markStatus(ctx context.Context, userID, importID, status string) {
 	updateCtx, cancel := context.WithTimeout(ctx, s.requestTimeout)
 	defer cancel()
-	_, _ = s.rawCollection.UpdateOne(updateCtx, userImportFilter(userID, importID), bson.M{"$set": bson.M{"status": status, "updated_at": time.Now().UTC()}})
+	_, _ = s.rawCollection.UpdateOne(updateCtx, rawStatusUpdateFilter(userID, importID, status), bson.M{"$set": bson.M{"status": status, "updated_at": time.Now().UTC()}})
+}
+
+func rawStatusUpdateFilter(userID, importID, status string) bson.M {
+	filter := userImportFilter(userID, importID)
+	switch status {
+	case "queued", "queued_without_event":
+		filter["status"] = bson.M{"$nin": []string{"parsing", "parsed", "parsed_pending_event"}}
+	}
+	return filter
 }
 
 func readImportPayload(r *http.Request) ([]byte, string, error) {

@@ -18,6 +18,7 @@ import (
 	"personal-finance-os/internal/platform/kafkax"
 	"personal-finance-os/internal/platform/logging"
 	"personal-finance-os/internal/platform/runtime"
+	"personal-finance-os/internal/platform/secureenv"
 	"personal-finance-os/internal/platform/startupx"
 	"personal-finance-os/internal/platform/userctx"
 	"personal-finance-os/internal/rules"
@@ -96,11 +97,18 @@ func main() {
 	retryBackoff := env.Duration("KAFKA_CONSUMER_RETRY_BACKOFF", 2*time.Second)
 	maxAttempts := env.Int("KAFKA_CONSUMER_RETRY_MAX_ATTEMPTS", 3)
 	clickhouseDatabase := env.String("CLICKHOUSE_DATABASE", "finance_os")
+	clickhouseDSN := env.String("CLICKHOUSE_DSN", "http://finance:finance@localhost:8123")
+	if err := secureenv.Enforce(serviceName, logger,
+		secureenv.RequireNonEmpty("CLICKHOUSE_DSN", clickhouseDSN),
+		secureenv.RejectContains("CLICKHOUSE_DSN", clickhouseDSN, "finance:finance@", "localhost:8123"),
+	); err != nil {
+		panic(err)
+	}
 
 	startupCtx, cancel := context.WithTimeout(context.Background(), startupTimeout)
 	defer cancel()
 
-	clickhouseClient, err := clickhousex.New(env.String("CLICKHOUSE_DSN", "http://finance:finance@localhost:8123"), requestTimeout)
+	clickhouseClient, err := clickhousex.New(clickhouseDSN, requestTimeout)
 	if err != nil {
 		panic(err)
 	}
@@ -112,21 +120,6 @@ func main() {
 
 	if err := startupx.Retry(startupCtx, logger, "kafka broker ping", func(ctx context.Context) error {
 		return kafkax.Ping(ctx, kafkaBrokers)
-	}); err != nil {
-		panic(err)
-	}
-	if err := startupx.Retry(startupCtx, logger, "kafka ensure transaction topic", func(ctx context.Context) error {
-		return kafkax.EnsureTopic(ctx, kafkaBrokers, transactionTopic, 1, 1)
-	}); err != nil {
-		panic(err)
-	}
-	if err := startupx.Retry(startupCtx, logger, "kafka ensure alert topic", func(ctx context.Context) error {
-		return kafkax.EnsureTopic(ctx, kafkaBrokers, alertTopic, 1, 1)
-	}); err != nil {
-		panic(err)
-	}
-	if err := startupx.Retry(startupCtx, logger, "kafka ensure quarantine topic", func(ctx context.Context) error {
-		return kafkax.EnsureTopic(ctx, kafkaBrokers, quarantineTopic, 1, 1)
 	}); err != nil {
 		panic(err)
 	}
@@ -390,6 +383,7 @@ func (s *service) consumeTransactions(ctx context.Context, logger *slog.Logger) 
 		ConsumerGroup:    s.transactionGroup,
 		RetryBackoff:     s.retryBackoff,
 		MaxAttempts:      s.maxAttempts,
+		IncludePayload:   true,
 	})
 }
 
@@ -404,6 +398,7 @@ func (s *service) consumeAlerts(ctx context.Context, logger *slog.Logger) error 
 		ConsumerGroup:    s.alertGroup,
 		RetryBackoff:     s.retryBackoff,
 		MaxAttempts:      s.maxAttempts,
+		IncludePayload:   true,
 	})
 }
 

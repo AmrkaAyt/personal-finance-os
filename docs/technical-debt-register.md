@@ -1,7 +1,7 @@
 # Personal Finance OS: Technical Debt Register
 
 Version: 0.1.0  
-Date: 2026-03-17  
+Date: 2026-04-26
 Status: active quality backlog
 
 ## 1. Purpose
@@ -49,6 +49,11 @@ A feature is considered complete only if:
 - `2026-03-17`: `ledger-service` was moved to a transactional outbox model for `transaction.upserted`.
 - `2026-03-17`: Kafka consumer loops were hardened with permanent/transient error classification, bounded retry, and `event.quarantine` handling.
 - `2026-03-17`: legacy plaintext raw imports and historical `raw_line` remnants were migrated/scrubbed with a dedicated maintenance command.
+- `2026-03-18`: Kafka topic provisioning was moved out of service startup into one-shot `kafka-bootstrap`.
+- `2026-03-18`: non-local fail-fast checks were added for security-critical defaults such as `JWT_SECRET`, seeded demo users, encryption keys, and insecure DB DSNs.
+- `2026-03-18`: categories were split into system-scoped and tenant-scoped user categories.
+- `2026-03-18`: Telegram password-in-chat login was replaced with one-time link-code binding confirmed under JWT.
+- `2026-03-19`: a stable mixed `k6` load-test baseline was captured after fixing gateway reverse-proxy connection churn.
 
 ### 4.1 Kafka Poison Message Handling Is Implemented; Quarantine Ops Still Need Maturity
 
@@ -57,12 +62,14 @@ Priority: `P0`
 Current state:
 - main Kafka consumers now classify permanent vs transient failures,
 - malformed payloads are published to `event.quarantine`,
+- new quarantine events include original payload for replay tooling,
 - consumers stay alive on isolated poison messages,
-- transient failures are retried with bounded backoff.
+- transient failures are retried with bounded backoff,
+- one-shot `quarantine-operator` can summarize, list, and dry-run replay matching events.
 
 Why this matters:
-- quarantine exists, but operator tooling around it is still thin,
-- there is no dedicated triage view or replay workflow yet.
+- quarantine exists and basic operator tooling is present,
+- but there is still no approval/commit workflow, triage UI, or replay audit trail.
 
 Why this matters for showcase quality:
 - the core failure-isolation story is now present,
@@ -73,10 +80,11 @@ Current scope:
 - [cmd/rule-engine/main.go](../cmd/rule-engine/main.go)
 - [cmd/analytics-writer/main.go](../cmd/analytics-writer/main.go)
 - [cmd/realtime-gateway/main.go](../cmd/realtime-gateway/main.go)
+- [cmd/quarantine-operator/main.go](../cmd/quarantine-operator/main.go)
 - [internal/platform/kafkax/consumer.go](../internal/platform/kafkax/consumer.go)
 
 Required fix:
-- add operator-facing quarantine inspection and replay path,
+- keep the current operator path and add replay approval/commit workflow,
 - add metrics/alerts for quarantine volume,
 - define retention and replay policy for `event.quarantine`.
 
@@ -89,8 +97,10 @@ Current state:
 - legacy plaintext raw imports can now be migrated and scrubbed with a dedicated maintenance command,
 - key-aware encryption metadata exists through `content_kid`,
 - legacy keys are supported for decryption,
+- key material can now be resolved through explicit secret refs (`env:` / `file:`),
+- non-local policy can reject env-backed key refs,
 - normalized transaction data in PostgreSQL, Mongo projections, and ClickHouse is still not field-encrypted,
-- key management is still env-based and not KMS-backed.
+- key management is still not KMS-backed.
 
 Why this matters:
 - financial statements and banking data are highly sensitive,
@@ -111,61 +121,71 @@ Current scope:
 Required fix:
 - define which fields must be encrypted at application level,
 - define key rotation policy,
-- decide between field-level encryption and storage-level encryption per datastore.
+- decide between field-level encryption and storage-level encryption per datastore,
+- move from secret refs to managed secret ownership / KMS integration for non-local environments.
 
-### 4.3 Kafka Topic Provisioning Still Performs Admin Work in Runtime
+### 4.3 Kafka Bootstrap Is Separated; Infra Ownership Is Still Basic
 
 Priority: `P0`
 
 Current state:
-- database schema creation was moved to migrations,
-- but Kafka topic creation is still performed by service startup code.
+- Kafka topic creation is no longer performed by normal runtime services,
+- provisioning is now handled by one-shot `kafka-bootstrap`,
+- Compose wiring ensures Kafka-dependent services wait for bootstrap completion.
 
 Why this matters:
-- services still need admin-like broker capabilities,
-- startup path still contains infra provisioning concerns.
+- runtime services no longer need broker admin calls,
+- but Kafka bootstrap still lives as application code rather than external IaC/Terraform/Helm ownership.
 
 Why this matters for showcase quality:
-- a polished backend should separate runtime from broker/bootstrap provisioning too.
+- the runtime/admin boundary is now explicit,
+- the remaining gap is infra maturity, not service correctness.
 
 Current scope:
 - [internal/platform/kafkax/kafka.go](../internal/platform/kafkax/kafka.go)
-- [cmd/ledger-service/main.go](../cmd/ledger-service/main.go)
-- [cmd/analytics-writer/main.go](../cmd/analytics-writer/main.go)
-- [cmd/parser-service/main.go](../cmd/parser-service/main.go)
-- [cmd/rule-engine/main.go](../cmd/rule-engine/main.go)
-- [cmd/realtime-gateway/main.go](../cmd/realtime-gateway/main.go)
+- [cmd/kafka-bootstrap/main.go](../cmd/kafka-bootstrap/main.go)
+- [deploy/docker-compose.yml](../deploy/docker-compose.yml)
 
 Required fix:
-- move Kafka topic provisioning to infra/bootstrap,
-- remove broker admin operations from normal service startup.
+- optionally move Kafka bootstrap ownership to infra tooling,
+- define per-topic partition/replication policy per environment.
 
-### 4.4 Insecure Defaults Still Exist in the Runtime Path
+### 4.4 Non-Local Fail-Fast Exists; Coverage Still Needs Expansion
 
 Priority: `P0`
 
 Current state:
-- local/demo secrets and credentials still exist in standard runtime configuration,
-- services are still willing to boot with development-grade values.
+- security-critical services now fail fast outside `local/dev/test` when:
+  - `JWT_SECRET` is left as `dev-secret`,
+  - seeded demo users remain enabled,
+  - encryption key placeholders are still present,
+  - PostgreSQL / ClickHouse DSNs still use obvious insecure defaults.
 
 Why this matters:
-- accidental production-like deployment with insecure settings is too easy,
-- demo convenience leaks into the main runtime path.
+- accidental non-local boot with demo-grade secrets is now blocked,
+- but policy coverage is still not fully centralized across every service and deployment target.
 
 Why this matters for showcase quality:
-- strong engineers separate local convenience from deployable defaults.
+- the safety baseline is now present in code,
+- the next step is broader policy depth and explicit deployment profiles.
 
 Current scope:
 - [cmd/api-gateway/main.go](../cmd/api-gateway/main.go)
 - [cmd/auth-service/main.go](../cmd/auth-service/main.go)
 - [cmd/ledger-service/main.go](../cmd/ledger-service/main.go)
+- [cmd/ingest-service/main.go](../cmd/ingest-service/main.go)
+- [cmd/parser-service/main.go](../cmd/parser-service/main.go)
+- [cmd/analytics-writer/main.go](../cmd/analytics-writer/main.go)
+- [cmd/migrate/main.go](../cmd/migrate/main.go)
+- [cmd/sensitive-data-maintenance/main.go](../cmd/sensitive-data-maintenance/main.go)
+- [internal/platform/secureenv/secureenv.go](../internal/platform/secureenv/secureenv.go)
 - [env/](../env)
 - [.env.example](../.env.example)
 
 Required fix:
-- add `APP_ENV`,
-- fail fast outside `local` if security-critical env vars are missing or unsafe,
-- move seeded users and demo credentials behind explicit dev-only flags.
+- extend checks to every relevant entrypoint,
+- add explicit staging/production profiles in deployment artifacts,
+- move seeded users and demo-only routes deeper behind dev-only toggles.
 
 ## 5. P1: Major Architecture and Maintainability Debt
 
@@ -241,27 +261,28 @@ Required fix:
   - `ledger-service` read API for internal consumers,
   - `notification-service` command/report fetches.
 
-### 5.4 Categories Are Global, Not Tenant-Scoped
+### 5.4 Tenant-Scoped Categories Are Implemented; Taxonomy Governance Still Needs Maturity
 
 Priority: `P1`
 
 Current state:
-- derived categories go into a shared category table,
-- user-specific taxonomy can leak into a global namespace.
+- categories now support:
+  - system scope,
+  - tenant-owned scope,
+- derived categories are created per user and are no longer globally leaked.
 
 Why this matters:
-- cross-tenant metadata leak,
-- polluted taxonomy,
-- unclear ownership semantics.
+- isolation at the metadata layer is now explicit,
+- but taxonomy governance is still basic.
 
 Current scope:
 - [internal/ledger/postgres.go](../internal/ledger/postgres.go)
 - [cmd/ledger-service/main.go](../cmd/ledger-service/main.go)
+- [migrations/postgres/000004_categories_tenant_scope.sql](../migrations/postgres/000004_categories_tenant_scope.sql)
 
 Required fix:
-- split `system categories` and `user categories`,
-- or add `user_id + scope`,
-- adjust listing and derived-category creation rules.
+- add admin/operator rules for category normalization and merge,
+- decide whether user categories should remain free-form or move toward controlled mapping.
 
 ### 5.5 Current Money Model Assumes Fixed 2-Decimal Minor Units
 
@@ -324,29 +345,33 @@ Required fix:
 
 ## 6. P1: Product and Channel Debt
 
-### 6.1 Telegram Auth Flow Is Functional but Not Safe Enough
+### 6.1 Telegram Link Flow Is Safer, but Still API-Centric
 
 Priority: `P1`
 
 Current state:
-- Telegram login currently uses `/login <username> <password>`.
+- password-in-chat login is gone,
+- bot now issues a one-time code,
+- binding is confirmed only through a JWT-authenticated API call,
+- stored `chat_id -> user_id` bindings are durable.
 
 Why this matters:
-- password handling in chat is a weak UX and a weak security posture,
-- acceptable only as a temporary technical bridge.
+- this is materially safer than sending credentials in chat,
+- but the UX still assumes direct API access rather than a richer browser/device-link flow.
 
 Required fix:
-- replace with link-code or magic-link style binding,
-- confirm ownership through the web/API side under JWT,
-- store durable `chat_id -> user_id` binding after explicit confirmation.
+- add a proper web/device-link confirmation page,
+- let users inspect and revoke bound chats from the main product UI.
 
-### 6.2 Notification Delivery Still Needs Digest/Batching Strategy
+### 6.2 Notification Delivery Has Digest Batching, but Policy Is Still Basic
 
 Priority: `P1`
 
 Current state:
 - anti-spam tuning exists,
-- but delivery still tends toward event-per-message rather than digest-per-context.
+- non-critical Telegram alerts are already batched into digest notifications,
+- user-level notification preferences and quiet windows now exist,
+- but batching policy is still heuristic rather than a full notification rules engine.
 
 Why this matters:
 - statement import can generate noisy alert behavior,
@@ -354,9 +379,11 @@ Why this matters:
 - UX becomes fatiguing.
 
 Required fix:
-- group alerts by `user_id`, `import_id`, and time window,
-- send digest summaries,
-- separate critical immediate alerts from batchable alerts.
+- keep the current `critical now / warning digest` split,
+- add richer user-level rate policies,
+- add per-category quiet windows and rate policies,
+- add multi-channel preferences beyond Telegram,
+- add operator visibility into dropped, merged, and delayed alerts.
 
 ### 6.3 PDF Support Covers Text-Based Files Only
 
@@ -398,25 +425,27 @@ Required fix:
 - use map-based category dedupe,
 - add import benchmark.
 
-### 7.2 No Load and Stress Validation Yet
+### 7.2 Load Baseline Exists; Stepped Stress and Soak Validation Still Need Work
 
 Priority: `P2`
 
 Current state:
 - functional tests exist,
-- but there is no meaningful load-test evidence for throughput or latency.
+- `k6` scenarios now exist for auth, writes, reads, imports, websocket churn, and mixed traffic,
+- a documented mixed-traffic baseline exists in [docs/load-test-baseline.md](load-test-baseline.md),
+- the captured baseline passed with zero HTTP failures under the default local mixed scenario,
+- there are still no stepped `100/150/200 VU` baselines or long-soak results.
 
 Why this matters:
 - the project claims a broad backend/highload orientation,
-- without measured results this remains mostly architectural.
+- the first measured baseline exists,
+- the remaining gap is proving behavior under higher concurrency and longer-running load.
 
 Required fix:
-- add `k6` or equivalent scenarios,
-- measure:
-  - import throughput,
-  - Kafka consumer lag,
-  - alert throughput,
-  - websocket fan-out behavior.
+- capture stepped mixed-load baselines,
+- add long-soak runs,
+- measure import throughput, Kafka lag, alert throughput, and websocket fan-out behavior,
+- keep exported summaries and Grafana/Prometheus evidence with the docs.
 
 ## 8. P2: Observability and Operations Debt
 
@@ -426,7 +455,9 @@ Priority: `P2`
 
 Current state:
 - containers are present,
-- but the project does not yet demonstrate a strong metrics taxonomy and ready dashboards.
+- Prometheus scraping works,
+- Grafana dashboard provisioning works,
+- but the metrics taxonomy is still thin and the dashboards are still only baseline-level.
 
 Why this matters:
 - observability is part of the stack you intentionally selected,
@@ -434,7 +465,7 @@ Why this matters:
 
 Required fix:
 - expose richer service metrics,
-- define dashboards for:
+- expand dashboards for:
   - import latency,
   - parser failures,
   - Kafka lag,
@@ -568,20 +599,18 @@ Current state:
 
 ## 12. Recommended Execution Order
 
-The recommended order is:
+The recommended order from the current state is:
 
-1. transactional outbox,
-2. migration framework,
-3. sensitive-data migration and data-protection policy,
-4. poison-message strategy,
-5. category tenancy fix,
-6. Telegram secure binding flow,
-7. alert digesting,
-8. richer observability,
-9. load testing,
-10. gRPC introduction,
-11. contract hardening,
-12. optional TCP/UDP justification or removal from target story.
+1. richer event contracts and compatibility tests,
+2. quarantine replay approval/commit workflow with audit trail,
+3. richer observability and tracing,
+4. stepped load baselines and soak runs,
+5. alert delivery policy hardening beyond Telegram-only rules,
+6. ledger import batch optimization,
+7. gRPC introduction for a narrow internal path,
+8. Telegram device-link UX,
+9. OCR parser mode for scanned PDFs,
+10. optional TCP/UDP justification or removal from target story.
 
 ## 13. What Should Be Marketed as Already Strong
 
@@ -598,11 +627,11 @@ These parts are already good and should be presented confidently:
 
 ## 14. What Must Be Finished Before Calling the Project "Production-Grade"
 
-The minimum set is:
+The remaining minimum set is:
 
-1. transactional outbox,
-2. schema migrations,
-3. sensitive data migration and key policy,
-4. poison-message handling,
-5. safer Telegram auth binding,
-6. observability beyond basic containers.
+1. formal event contracts and compatibility checks,
+2. auditable quarantine replay operations,
+3. stronger secret/key ownership beyond local secret refs,
+4. observability beyond basic containers,
+5. backup, retention, export, and delete policy,
+6. broader failure-path integration coverage.
