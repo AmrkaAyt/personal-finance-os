@@ -1,7 +1,7 @@
 # Personal Finance OS: Current Implementation Status
 
 Version: 0.1.0  
-Date: 2026-04-26
+Date: 2026-04-28
 Status: V1 core implemented
 
 ## 1. Purpose
@@ -21,6 +21,7 @@ For target scope and product boundaries, see:
 
 The project already contains a working V1 backend platform with:
 - external API gateway,
+- gateway-served web cockpit,
 - authentication with JWT and refresh sessions,
 - raw statement import,
 - asynchronous parsing,
@@ -133,6 +134,7 @@ Implemented in:
 
 What it does now:
 - acts as the single external REST entrypoint,
+- serves the browser cockpit under `/app/`,
 - validates JWT access tokens on protected routes,
 - forwards identity to downstream services through `X-User-ID` and role headers,
 - strips user-controlled `user_id` query overrides before proxying,
@@ -313,6 +315,26 @@ What it does now:
 - exposes presence/config endpoints.
 
 ## 5. Implemented Product Flows
+
+### 5.0 Browser Cockpit Flow
+
+```mermaid
+sequenceDiagram
+    participant U as User Browser
+    participant GW as api-gateway
+    participant SVC as Backend Services
+    participant RT as realtime-gateway
+
+    U->>GW: GET /app/
+    GW-->>U: embedded web cockpit assets
+    U->>GW: POST /auth/login
+    GW-->>U: access + refresh token
+    U->>GW: REST calls for imports / ledger / analytics / notifications
+    GW->>SVC: authenticated proxy calls with X-User-ID
+    U->>GW: WebSocket /ws
+    GW->>RT: authenticated WebSocket proxy
+    RT-->>U: transaction and alert updates
+```
 
 ### 5.1 Auth Flow
 
@@ -501,6 +523,17 @@ The bot can already:
 - return alert report,
 - return service status.
 
+### 8.3 Browser Cockpit: Current Capability
+
+The browser cockpit can already:
+- authenticate through the gateway,
+- upload statements and poll parse status,
+- show period summary, daily spend, alerts, recurring candidates, and transactions,
+- create manual ledger transactions with idempotency keys,
+- manage notification preferences,
+- confirm Telegram link codes under the authenticated session,
+- connect to realtime dashboard, transaction, and alert channels.
+
 Supported commands:
 - `/help`
 - `/link`
@@ -514,6 +547,7 @@ Supported commands:
 ### 8.2 Current Constraints
 
 Still limited in V1:
+- the web cockpit is functional but not yet a full planning workspace,
 - link confirmation is API-driven rather than web-driven,
 - no richer self-service onboarding than one-time code + API confirm,
 - no advanced planning commands,
@@ -661,10 +695,11 @@ Still out of current implementation:
 
 The next technical steps should be:
 
-1. add consumer-driven compatibility tests for Kafka payloads,
-2. add quarantine retention policy and replay audit reporting,
-3. expand observability with richer service metrics and tracing,
-4. capture stepped load baselines and longer soak runs,
-5. batch-optimize the ledger import/upsert path,
-6. improve Telegram device-link UX,
-7. add OCR path for scanned PDFs.
+1. add insight action lifecycle for the web cockpit: acknowledge, snooze, resolve, recategorize,
+2. add consumer-driven compatibility tests for Kafka payloads,
+3. add quarantine retention policy and replay audit reporting,
+4. expand observability with richer service metrics and tracing,
+5. capture stepped load baselines and longer soak runs,
+6. batch-optimize the ledger import/upsert path,
+7. improve Telegram device-link UX,
+8. add OCR path for scanned PDFs.

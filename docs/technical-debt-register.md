@@ -1,7 +1,7 @@
 # Personal Finance OS: Technical Debt Register
 
 Version: 0.1.0  
-Date: 2026-04-26
+Date: 2026-04-28
 Status: active quality backlog
 
 ## 1. Purpose
@@ -54,6 +54,7 @@ A feature is considered complete only if:
 - `2026-03-18`: categories were split into system-scoped and tenant-scoped user categories.
 - `2026-03-18`: Telegram password-in-chat login was replaced with one-time link-code binding confirmed under JWT.
 - `2026-03-19`: a stable mixed `k6` load-test baseline was captured after fixing gateway reverse-proxy connection churn.
+- `2026-04-28`: `api-gateway` now serves a first browser cockpit for login, import, ledger, analytics, notification preferences, Telegram code confirmation, and realtime updates.
 
 ### 4.1 Kafka Poison Message Handling Is Implemented; Quarantine Ops Still Need Maturity
 
@@ -347,6 +348,25 @@ Required fix:
 
 ## 6. P1: Product and Channel Debt
 
+### 6.0 Browser Cockpit Exists; Insight Actions Are Still Thin
+
+Priority: `P1`
+
+Current state:
+- `api-gateway` serves an embedded web cockpit at `/app/`,
+- the cockpit can authenticate, import statements, show ledger/analytics/signals, add manual transactions, manage notification preferences, confirm Telegram link codes, and connect to realtime channels,
+- there is still no full action lifecycle for insights.
+
+Why this matters:
+- the project is no longer backend-only,
+- but the product promise requires every important signal to map to a concrete user action.
+
+Required fix:
+- add actions for alert acknowledgement, snooze, resolve, and suppress similar future alerts,
+- add recurring confirmation/rejection lifecycle,
+- add recategorization flow tied to transactions and future classifier rules,
+- add a compact first-run/import readiness state for real personal use.
+
 ### 6.1 Telegram Link Flow Is Safer, but Still API-Centric
 
 Priority: `P1`
@@ -602,16 +622,17 @@ Current state:
 
 The recommended order from the current state is:
 
-1. consumer-driven event compatibility tests,
-2. quarantine retention and replay audit reporting,
-3. richer observability and tracing,
-4. stepped load baselines and soak runs,
-5. alert delivery policy hardening beyond Telegram-only rules,
-6. ledger import batch optimization,
-7. gRPC introduction for a narrow internal path,
-8. Telegram device-link UX,
-9. OCR parser mode for scanned PDFs,
-10. optional TCP/UDP justification or removal from target story.
+1. insight action lifecycle in the browser cockpit,
+2. consumer-driven event compatibility tests,
+3. quarantine retention and replay audit reporting,
+4. richer observability and tracing,
+5. stepped load baselines and soak runs,
+6. alert delivery policy hardening beyond Telegram-only rules,
+7. ledger import batch optimization,
+8. gRPC introduction for a narrow internal path,
+9. Telegram device-link UX,
+10. OCR parser mode for scanned PDFs,
+11. optional TCP/UDP justification or removal from target story.
 
 ## 13. What Should Be Marketed as Already Strong
 
@@ -620,6 +641,7 @@ These parts are already good and should be presented confidently:
 - mixed broker usage with clear roles,
 - JWT + refresh + Redis session model,
 - Telegram integration beyond simple outbound messages,
+- browser cockpit over the live gateway APIs,
 - raw import encryption at rest,
 - realtime fan-out,
 - ClickHouse analytical projection path,

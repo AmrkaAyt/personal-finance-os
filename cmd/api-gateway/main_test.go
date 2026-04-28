@@ -1,10 +1,12 @@
 package main
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -79,5 +81,56 @@ func TestProxyHandlerStripsUserIDQueryAndSetsHeader(t *testing.T) {
 	}
 	if capturedUserID != "user-demo" {
 		t.Fatalf("unexpected X-User-ID: %s", capturedUserID)
+	}
+}
+
+func TestRegisterWebAppServesEmbeddedAssets(t *testing.T) {
+	t.Parallel()
+
+	mux := http.NewServeMux()
+	registerWebApp(mux)
+
+	indexRecorder := httptest.NewRecorder()
+	mux.ServeHTTP(indexRecorder, httptest.NewRequest(http.MethodGet, "/app/", nil))
+	if indexRecorder.Code != http.StatusOK {
+		t.Fatalf("index status = %d, want %d", indexRecorder.Code, http.StatusOK)
+	}
+	if !strings.Contains(indexRecorder.Body.String(), "Personal Finance OS") {
+		t.Fatal("index response does not contain app shell marker")
+	}
+
+	assetRecorder := httptest.NewRecorder()
+	mux.ServeHTTP(assetRecorder, httptest.NewRequest(http.MethodGet, "/app/app.js", nil))
+	if assetRecorder.Code != http.StatusOK {
+		t.Fatalf("asset status = %d, want %d", assetRecorder.Code, http.StatusOK)
+	}
+	body, err := io.ReadAll(assetRecorder.Result().Body)
+	if err != nil {
+		t.Fatalf("read asset body: %v", err)
+	}
+	if !strings.Contains(string(body), "connectWebSocket") {
+		t.Fatal("app.js response does not contain realtime client marker")
+	}
+}
+
+func TestRegisterWebAppRootRedirectAndUnknownNotFound(t *testing.T) {
+	t.Parallel()
+
+	mux := http.NewServeMux()
+	registerWebApp(mux)
+
+	rootRecorder := httptest.NewRecorder()
+	mux.ServeHTTP(rootRecorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rootRecorder.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("root status = %d, want %d", rootRecorder.Code, http.StatusTemporaryRedirect)
+	}
+	if location := rootRecorder.Header().Get("Location"); location != "/app/" {
+		t.Fatalf("root redirect location = %q, want /app/", location)
+	}
+
+	missingRecorder := httptest.NewRecorder()
+	mux.ServeHTTP(missingRecorder, httptest.NewRequest(http.MethodGet, "/missing", nil))
+	if missingRecorder.Code != http.StatusNotFound {
+		t.Fatalf("missing status = %d, want %d", missingRecorder.Code, http.StatusNotFound)
 	}
 }

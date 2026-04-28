@@ -110,6 +110,7 @@ func main() {
 	mux.Handle("GET /api/v1/presence", svc.protected(svc.proxyHandler(svc.realtimeProxy), readRoles...))
 	mux.Handle("GET /api/v1/realtime/config", svc.protected(svc.proxyHandler(svc.realtimeProxy), readRoles...))
 	mux.Handle("GET /ws", svc.websocketProxy(readRoles...))
+	registerWebApp(mux)
 
 	if err := runtime.Run(runtime.Config{
 		Name:     serviceName,

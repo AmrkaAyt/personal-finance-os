@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Personal Finance OS</title>
+    <link rel="icon" href="/app/mark.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/app/styles.css">
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="rail" aria-label="Primary">
+        <div class="brand">
+          <img src="/app/mark.svg" alt="">
+          <div>
+            <strong>PFOS</strong>
+            <span>Money cockpit</span>
+          </div>
+        </div>
+        <nav class="nav">
+          <a href="#overview">Overview</a>
+          <a href="#transactions">Transactions</a>
+          <a href="#imports">Imports</a>
+          <a href="#signals">Signals</a>
+          <a href="#settings">Settings</a>
+        </nav>
+        <div class="rail-status">
+          <span id="wsDot" class="dot"></span>
+          <span id="wsState">Offline</span>
+        </div>
+      </aside>
+
+      <main class="workspace">
+        <section id="loginView" class="login-view">
+          <form id="loginForm" class="login-panel">
+            <img src="/app/mark.svg" alt="" class="login-mark">
+            <h1>Personal Finance OS</h1>
+            <label>
+              Username
+              <input id="username" name="username" autocomplete="username" value="demo" required>
+            </label>
+            <label>
+              Password
+              <input id="password" name="password" type="password" autocomplete="current-password" value="demo" required>
+            </label>
+            <button type="submit" class="primary">Sign in</button>
+            <p id="loginError" class="error" role="alert"></p>
+          </form>
+        </section>
+
+        <section id="appView" class="app-view hidden">
+          <header class="topbar">
+            <div>
+              <p class="eyebrow">Current account</p>
+              <h1 id="profileTitle">Dashboard</h1>
+            </div>
+            <div class="top-actions">
+              <label>
+                From
+                <input id="dateFrom" type="date">
+              </label>
+              <label>
+                To
+                <input id="dateTo" type="date">
+              </label>
+              <button id="refreshButton" type="button">Refresh</button>
+              <button id="logoutButton" type="button" class="ghost">Log out</button>
+            </div>
+          </header>
+
+          <section id="overview" class="metric-grid" aria-label="Financial summary">
+            <article class="metric">
+              <span>Spent</span>
+              <strong id="spentMetric">$0.00</strong>
+            </article>
+            <article class="metric">
+              <span>Income</span>
+              <strong id="incomeMetric">$0.00</strong>
+            </article>
+            <article class="metric">
+              <span>Net flow</span>
+              <strong id="netMetric">$0.00</strong>
+            </article>
+            <article class="metric">
+              <span>Transactions</span>
+              <strong id="countMetric">0</strong>
+            </article>
+          </section>
+
+          <div class="content-grid">
+            <section class="panel wide" aria-labelledby="spendTitle">
+              <div class="panel-head">
+                <h2 id="spendTitle">Daily spend</h2>
+                <span id="periodLabel"></span>
+              </div>
+              <div id="dailySpendChart" class="bar-chart"></div>
+            </section>
+
+            <section id="imports" class="panel" aria-labelledby="importTitle">
+              <div class="panel-head">
+                <h2 id="importTitle">Statement import</h2>
+                <span id="importStatus">Idle</span>
+              </div>
+              <form id="importForm" class="stack-form">
+                <input id="statementFile" name="file" type="file" accept=".csv,.pdf,text/csv,application/pdf" required>
+                <button type="submit" class="primary">Upload</button>
+              </form>
+              <div id="importResult" class="compact-output"></div>
+            </section>
+
+            <section id="transactions" class="panel wide" aria-labelledby="transactionsTitle">
+              <div class="panel-head">
+                <h2 id="transactionsTitle">Transactions</h2>
+                <span id="transactionCount">0 rows</span>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Merchant</th>
+                      <th>Category</th>
+                      <th class="amount-cell">Amount</th>
+                    </tr>
+                  </thead>
+                  <tbody id="transactionsBody"></tbody>
+                </table>
+              </div>
+            </section>
+
+            <section class="panel" aria-labelledby="manualTitle">
+              <div class="panel-head">
+                <h2 id="manualTitle">Manual entry</h2>
+              </div>
+              <form id="manualForm" class="stack-form">
+                <input id="manualMerchant" placeholder="Merchant" required>
+                <input id="manualCategory" placeholder="Category" value="uncategorized">
+                <input id="manualAmount" type="number" step="0.01" placeholder="-24.50" required>
+                <input id="manualDate" type="datetime-local" required>
+                <button type="submit" class="primary">Add</button>
+              </form>
+              <p id="manualStatus" class="hint"></p>
+            </section>
+
+            <section id="signals" class="panel wide" aria-labelledby="signalsTitle">
+              <div class="panel-head">
+                <h2 id="signalsTitle">Signals</h2>
+                <span id="alertCount">0 alerts</span>
+              </div>
+              <div class="split-list">
+                <div>
+                  <h3>Alerts</h3>
+                  <div id="alertsList" class="event-list"></div>
+                </div>
+                <div>
+                  <h3>Recurring</h3>
+                  <div id="recurringList" class="event-list"></div>
+                </div>
+              </div>
+            </section>
+
+            <section class="panel" aria-labelledby="liveTitle">
+              <div class="panel-head">
+                <h2 id="liveTitle">Live feed</h2>
+                <span id="presenceLabel">No presence</span>
+              </div>
+              <div id="liveFeed" class="event-list live"></div>
+            </section>
+
+            <section id="settings" class="panel wide" aria-labelledby="prefsTitle">
+              <div class="panel-head">
+                <h2 id="prefsTitle">Notifications</h2>
+                <span id="notificationStatus">Loading</span>
+              </div>
+              <form id="prefsForm" class="prefs-grid">
+                <label class="check"><input id="prefTelegram" type="checkbox"> Telegram</label>
+                <label class="check"><input id="prefBatch" type="checkbox"> Digest non-critical</label>
+                <label class="check"><input id="prefQuiet" type="checkbox"> Quiet hours</label>
+                <label>Quiet start <input id="prefQuietStart" type="time"></label>
+                <label>Quiet end <input id="prefQuietEnd" type="time"></label>
+                <label>Timezone <input id="prefTimezone" value="UTC"></label>
+                <label class="wide-field">Disabled alert types <input id="prefDisabled" placeholder="new_merchant, overspend"></label>
+                <button type="submit" class="primary">Save preferences</button>
+              </form>
+              <div class="telegram-row">
+                <input id="telegramCode" placeholder="Telegram link code">
+                <button id="confirmTelegramButton" type="button">Confirm link</button>
+                <button id="demoTelegramButton" type="button" class="ghost">Send demo</button>
+              </div>
+              <p id="prefsStatus" class="hint"></p>
+            </section>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/app/app.js"></script>
+  </body>
+</html>
