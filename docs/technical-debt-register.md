@@ -55,6 +55,7 @@ A feature is considered complete only if:
 - `2026-03-18`: Telegram password-in-chat login was replaced with one-time link-code binding confirmed under JWT.
 - `2026-03-19`: a stable mixed `k6` load-test baseline was captured after fixing gateway reverse-proxy connection churn.
 - `2026-04-28`: `api-gateway` now serves a first browser cockpit for login, import, ledger, analytics, notification preferences, Telegram code confirmation, and realtime updates.
+- `2026-04-28`: insight actions are now persisted for alert and recurring signals, and the cockpit can acknowledge, snooze, resolve, suppress, confirm, or reject those signals.
 
 ### 4.1 Kafka Poison Message Handling Is Implemented; Quarantine Ops Still Need Maturity
 
@@ -348,22 +349,26 @@ Required fix:
 
 ## 6. P1: Product and Channel Debt
 
-### 6.0 Browser Cockpit Exists; Insight Actions Are Still Thin
+### 6.0 Browser Cockpit Exists; Workflow Inbox Is Still Thin
 
 Priority: `P1`
 
 Current state:
 - `api-gateway` serves an embedded web cockpit at `/app/`,
 - the cockpit can authenticate, import statements, show ledger/analytics/signals, add manual transactions, manage notification preferences, confirm Telegram link codes, and connect to realtime channels,
-- there is still no full action lifecycle for insights.
+- user actions on insight signals are persisted in PostgreSQL through `/api/v1/insights/actions`,
+- alert rows can be acknowledged, snoozed, resolved, or suppressed,
+- recurring candidates can be confirmed or rejected,
+- there is still no dedicated workflow inbox or reminder scheduler.
 
 Why this matters:
 - the project is no longer backend-only,
-- but the product promise requires every important signal to map to a concrete user action.
+- the product promise now has a signal-to-action path,
+- but daily use still needs a workflow queue and due/snooze semantics beyond simple action state.
 
 Required fix:
-- add actions for alert acknowledgement, snooze, resolve, and suppress similar future alerts,
-- add recurring confirmation/rejection lifecycle,
+- add an inbox view for pending, snoozed, and resolved work,
+- add due dates and reminder scheduling for snoozed or confirmed recurring items,
 - add recategorization flow tied to transactions and future classifier rules,
 - add a compact first-run/import readiness state for real personal use.
 
@@ -622,7 +627,7 @@ Current state:
 
 The recommended order from the current state is:
 
-1. insight action lifecycle in the browser cockpit,
+1. workflow inbox and reminder scheduling on top of insight actions,
 2. consumer-driven event compatibility tests,
 3. quarantine retention and replay audit reporting,
 4. richer observability and tracing,

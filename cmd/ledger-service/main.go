@@ -19,6 +19,7 @@ import (
 
 	"personal-finance-os/internal/eventcontracts"
 	"personal-finance-os/internal/imports"
+	"personal-finance-os/internal/insights"
 	"personal-finance-os/internal/ledger"
 	"personal-finance-os/internal/platform/env"
 	"personal-finance-os/internal/platform/httpx"
@@ -35,6 +36,7 @@ import (
 type service struct {
 	logger           *slog.Logger
 	repository       *ledger.Repository
+	insightActions   insightActionStore
 	parsedCollection *mongo.Collection
 	kafkaReader      *kafka.Reader
 	kafkaWriter      *kafka.Writer
@@ -54,6 +56,11 @@ type service struct {
 	outboxOwner      string
 }
 
+type insightActionStore interface {
+	Upsert(context.Context, insights.Action) (insights.Action, error)
+	List(context.Context, string, int) ([]insights.Action, error)
+}
+
 type createTransactionRequest struct {
 	AccountID   string     `json:"account_id"`
 	Merchant    string     `json:"merchant"`
@@ -61,6 +68,15 @@ type createTransactionRequest struct {
 	AmountCents int64      `json:"amount_cents"`
 	Currency    string     `json:"currency"`
 	OccurredAt  *time.Time `json:"occurred_at,omitempty"`
+}
+
+type insightActionRequest struct {
+	InsightID    string            `json:"insight_id"`
+	InsightType  string            `json:"insight_type"`
+	Action       string            `json:"action"`
+	Reason       string            `json:"reason,omitempty"`
+	SnoozedUntil *time.Time        `json:"snoozed_until,omitempty"`
+	Metadata     map[string]string `json:"metadata,omitempty"`
 }
 
 func main() {
@@ -107,6 +123,7 @@ func main() {
 	defer postgresPool.Close()
 
 	repository := ledger.NewRepository(postgresPool)
+	insightActions := insights.NewRepository(postgresPool)
 
 	mongoClient, err := startupx.RetryValue(startupCtx, logger, "mongodb connect", func(ctx context.Context) (*mongo.Client, error) {
 		return mongox.Connect(ctx, mongoURI)
@@ -153,6 +170,7 @@ func main() {
 	svc := &service{
 		logger:           logger,
 		repository:       repository,
+		insightActions:   insightActions,
 		parsedCollection: parsedCollection,
 		kafkaReader:      kafkaReader,
 		kafkaWriter:      kafkaWriter,
@@ -178,6 +196,8 @@ func main() {
 	mux.HandleFunc("POST /api/v1/transactions", svc.handleCreateTransaction)
 	mux.HandleFunc("GET /api/v1/categories", svc.handleListCategories)
 	mux.HandleFunc("GET /api/v1/recurring", svc.handleListRecurring)
+	mux.HandleFunc("GET /api/v1/insights/actions", svc.handleListInsightActions)
+	mux.HandleFunc("POST /api/v1/insights/actions", svc.handleCreateInsightAction)
 
 	if err := runtime.Run(runtime.Config{
 		Name:     serviceName,
@@ -191,6 +211,70 @@ func main() {
 	}); err != nil {
 		panic(err)
 	}
+}
+
+func (s *service) handleListInsightActions(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), s.requestTimeout)
+	defer cancel()
+	userID, err := userctx.RequireAuthenticatedUserID(r)
+	if err != nil {
+		httpx.JSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	limit := 100
+	if rawLimit := strings.TrimSpace(r.URL.Query().Get("limit")); rawLimit != "" {
+		parsed, err := strconv.Atoi(rawLimit)
+		if err != nil || parsed <= 0 {
+			httpx.JSON(w, http.StatusBadRequest, map[string]string{"error": "invalid limit"})
+			return
+		}
+		limit = parsed
+	}
+
+	actions, err := s.insightActions.List(ctx, userID, limit)
+	if err != nil {
+		httpx.JSON(w, http.StatusInternalServerError, map[string]string{"error": "internal_error"})
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"actions": actions})
+}
+
+func (s *service) handleCreateInsightAction(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), s.requestTimeout)
+	defer cancel()
+	userID, err := userctx.RequireAuthenticatedUserID(r)
+	if err != nil {
+		httpx.JSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	var request insightActionRequest
+	if err := httpx.ReadJSON(r, &request); err != nil {
+		httpx.JSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+		return
+	}
+
+	action, err := insights.Normalize(insights.Action{
+		UserID:       userID,
+		InsightID:    request.InsightID,
+		InsightType:  request.InsightType,
+		Action:       request.Action,
+		Reason:       request.Reason,
+		SnoozedUntil: request.SnoozedUntil,
+		Metadata:     request.Metadata,
+	})
+	if err != nil {
+		httpx.JSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	stored, err := s.insightActions.Upsert(ctx, action)
+	if err != nil {
+		httpx.JSON(w, http.StatusInternalServerError, map[string]string{"error": "internal_error"})
+		return
+	}
+	httpx.JSON(w, http.StatusOK, stored)
 }
 
 func (s *service) handleListTransactions(w http.ResponseWriter, r *http.Request) {

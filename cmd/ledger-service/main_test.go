@@ -1,12 +1,30 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"personal-finance-os/internal/insights"
 )
+
+type fakeInsightActionStore struct {
+	stored insights.Action
+	items  []insights.Action
+}
+
+func (s *fakeInsightActionStore) Upsert(_ context.Context, action insights.Action) (insights.Action, error) {
+	s.stored = action
+	return action, nil
+}
+
+func (s *fakeInsightActionStore) List(_ context.Context, _ string, _ int) ([]insights.Action, error) {
+	return s.items, nil
+}
 
 func TestHandleListTransactionsRejectsMissingIdentity(t *testing.T) {
 	t.Parallel()
@@ -76,5 +94,85 @@ func TestLedgerManualTransactionFromRequestUsesIdempotencyKey(t *testing.T) {
 	}
 	if first.ID != second.ID || first.Fingerprint != second.Fingerprint {
 		t.Fatal("expected deterministic idempotent transaction identity")
+	}
+}
+
+func TestHandleCreateInsightActionStoresAuthenticatedUserAction(t *testing.T) {
+	t.Parallel()
+
+	store := &fakeInsightActionStore{}
+	service := &service{insightActions: store, requestTimeout: time.Second}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/insights/actions", strings.NewReader(`{
+		"insight_id":"alert:2026-04-28:large_transaction:warning",
+		"insight_type":"alert",
+		"action":"acknowledge",
+		"metadata":{"alert_type":"large_transaction"}
+	}`))
+	request.Header.Set("X-User-ID", "user-demo")
+	recorder := httptest.NewRecorder()
+
+	service.handleCreateInsightAction(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d", recorder.Code)
+	}
+	if store.stored.UserID != "user-demo" {
+		t.Fatalf("unexpected stored user id: %s", store.stored.UserID)
+	}
+	if store.stored.Action != insights.ActionAcknowledge {
+		t.Fatalf("unexpected stored action: %s", store.stored.Action)
+	}
+}
+
+func TestHandleCreateInsightActionRejectsInvalidSnooze(t *testing.T) {
+	t.Parallel()
+
+	service := &service{insightActions: &fakeInsightActionStore{}, requestTimeout: time.Second}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/insights/actions", strings.NewReader(`{
+		"insight_id":"alert:large",
+		"insight_type":"alert",
+		"action":"snooze"
+	}`))
+	request.Header.Set("X-User-ID", "user-demo")
+	recorder := httptest.NewRecorder()
+
+	service.handleCreateInsightAction(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("unexpected status: %d", recorder.Code)
+	}
+}
+
+func TestHandleListInsightActionsReturnsUserActions(t *testing.T) {
+	t.Parallel()
+
+	service := &service{
+		insightActions: &fakeInsightActionStore{items: []insights.Action{{
+			ID:          "insact-1",
+			UserID:      "user-demo",
+			InsightID:   "recurring:rent",
+			InsightType: "recurring",
+			Action:      insights.ActionConfirmRecurring,
+			Metadata:    map[string]string{},
+		}}},
+		requestTimeout: time.Second,
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/insights/actions", nil)
+	request.Header.Set("X-User-ID", "user-demo")
+	recorder := httptest.NewRecorder()
+
+	service.handleListInsightActions(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d", recorder.Code)
+	}
+	var response struct {
+		Actions []insights.Action `json:"actions"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(response.Actions) != 1 || response.Actions[0].Action != insights.ActionConfirmRecurring {
+		t.Fatalf("unexpected response: %+v", response)
 	}
 }

@@ -30,6 +30,7 @@ The project already contains a working V1 backend platform with:
 - Telegram notifications,
 - analytics projections,
 - realtime delivery,
+- persisted user actions for insight signals,
 - Docker-based local environment,
 - one-shot Kafka bootstrap outside runtime services,
 - automated tests and CI baseline.
@@ -222,6 +223,7 @@ What it does now:
   - manual transaction creation,
   - category listing,
   - recurring detection,
+  - insight action tracking for alert and recurring signals,
 - publishes `transaction.upserted` from a background outbox publisher,
 - enforces authenticated user context for HTTP access,
 - rejects client-supplied `user_id`, `id`, `fingerprint`, and other hidden storage fields,
@@ -457,6 +459,7 @@ Currently used for:
 - canonical transactions,
 - system categories and tenant-scoped user categories,
 - notification preferences,
+- user actions on insight signals,
 - recurring detection queries.
 
 ### 7.2 MongoDB
@@ -530,6 +533,9 @@ The browser cockpit can already:
 - upload statements and poll parse status,
 - show period summary, daily spend, alerts, recurring candidates, and transactions,
 - create manual ledger transactions with idempotency keys,
+- acknowledge, snooze, resolve, and suppress alert signals,
+- confirm or reject recurring candidates,
+- persist insight actions through the ledger-backed action store,
 - manage notification preferences,
 - confirm Telegram link codes under the authenticated session,
 - connect to realtime dashboard, transaction, and alert channels.
@@ -548,6 +554,7 @@ Supported commands:
 
 Still limited in V1:
 - the web cockpit is functional but not yet a full planning workspace,
+- insight actions are tracked and reflected in the cockpit, but there is not yet a full reminder scheduler or workflow inbox,
 - link confirmation is API-driven rather than web-driven,
 - no richer self-service onboarding than one-time code + API confirm,
 - no advanced planning commands,
@@ -695,7 +702,7 @@ Still out of current implementation:
 
 The next technical steps should be:
 
-1. add insight action lifecycle for the web cockpit: acknowledge, snooze, resolve, recategorize,
+1. add a workflow inbox and reminder scheduling on top of recorded insight actions,
 2. add consumer-driven compatibility tests for Kafka payloads,
 3. add quarantine retention policy and replay audit reporting,
 4. expand observability with richer service metrics and tracing,

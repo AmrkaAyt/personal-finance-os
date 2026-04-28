@@ -4,6 +4,9 @@ const state = {
   profile: null,
   ws: null,
   live: [],
+  actions: new Map(),
+  insights: new Map(),
+  preferences: null,
 };
 
 const els = {
@@ -172,18 +175,21 @@ async function loadAll() {
     return;
   }
   try {
-    const [profile, summary, daily, transactions, recurring, alerts, status, prefs, presence] = await Promise.all([
+    const [profile, summary, daily, transactions, recurring, alerts, actions, status, prefs, presence] = await Promise.all([
       jsonApi("/api/v1/profile"),
       jsonApi(`/api/v1/analytics/projections/summary?${periodParams()}`),
       jsonApi(`/api/v1/analytics/projections/daily-spend?${periodParams()}`),
       jsonApi("/api/v1/transactions?limit=50"),
       jsonApi("/api/v1/recurring"),
       jsonApi(`/api/v1/analytics/projections/alerts?${periodParams()}`),
+      jsonApi("/api/v1/insights/actions?limit=200"),
       jsonApi("/api/v1/notifications/status"),
       jsonApi("/api/v1/notifications/preferences"),
       jsonApi("/api/v1/presence"),
     ]);
     state.profile = profile;
+    state.actions = buildActionMap(actions.actions || []);
+    state.insights = new Map();
     renderProfile(profile);
     renderSummary(summary);
     renderDailySpend(daily);
@@ -264,23 +270,39 @@ function renderAlerts(payload) {
   const rows = dataRows(payload);
   els.alertCount.textContent = `${rows.length} alert rows`;
   els.alertsList.innerHTML = rows.length
-    ? rows.map((row) => `
-      <div class="event-item">
+    ? rows.map((row) => {
+      const insight = alertInsight(row);
+      return `
+      <div class="event-item actionable">
         <strong>${escapeHTML(row.type || "alert")} · ${escapeHTML(row.severity || "unknown")}</strong>
         <span>${escapeHTML(row.event_date || "")} · ${numberValue(row.alert_count)} events</span>
+        ${actionControls(insight, [
+          ["acknowledge", "Acknowledge"],
+          ["snooze", "Snooze 24h"],
+          ["resolve", "Resolve"],
+          ["suppress_similar", "Suppress similar"],
+        ])}
       </div>
-    `).join("")
+    `;
+    }).join("")
     : emptyState("No alerts");
 }
 
 function renderRecurring(patterns) {
   els.recurringList.innerHTML = patterns.length
-    ? patterns.map((pattern) => `
-      <div class="event-item">
+    ? patterns.map((pattern) => {
+      const insight = recurringInsight(pattern);
+      return `
+      <div class="event-item actionable">
         <strong>${escapeHTML(pattern.merchant || "merchant")}</strong>
         <span>${escapeHTML(pattern.category || "category")} · every ${numberValue(pattern.interval_days)} days · ${money(numberValue(pattern.amount_cents))}</span>
+        ${actionControls(insight, [
+          ["confirm_recurring", "Confirm"],
+          ["reject_recurring", "Reject"],
+        ])}
       </div>
-    `).join("")
+    `;
+    }).join("")
     : emptyState("No recurring patterns");
 }
 
@@ -290,6 +312,7 @@ function renderNotificationStatus(status) {
 }
 
 function renderPreferences(prefs) {
+  state.preferences = prefs;
   els.prefTelegram.checked = Boolean(prefs.telegram_enabled);
   els.prefBatch.checked = Boolean(prefs.batch_non_critical);
   els.prefQuiet.checked = Boolean(prefs.quiet_hours_enabled);
@@ -297,6 +320,67 @@ function renderPreferences(prefs) {
   els.prefQuietEnd.value = minutesToTime(numberValue(prefs.quiet_end_minute));
   els.prefTimezone.value = prefs.quiet_timezone || "UTC";
   els.prefDisabled.value = (prefs.disabled_alert_types || []).join(", ");
+}
+
+function buildActionMap(actions) {
+  const result = new Map();
+  for (const action of actions) {
+    result.set(action.insight_id, action);
+  }
+  return result;
+}
+
+function alertInsight(row) {
+  const eventDate = row.event_date || "unknown";
+  const type = row.type || "alert";
+  const severity = row.severity || "unknown";
+  return {
+    id: `alert:${eventDate}:${type}:${severity}`,
+    type: "alert",
+    metadata: {
+      event_date: String(eventDate),
+      alert_type: String(type),
+      severity: String(severity),
+    },
+  };
+}
+
+function recurringInsight(pattern) {
+  const merchant = pattern.merchant || "merchant";
+  const category = pattern.category || "category";
+  const amount = String(numberValue(pattern.amount_cents));
+  const interval = String(numberValue(pattern.interval_days));
+  return {
+    id: `recurring:${merchant}:${category}:${amount}:${interval}`,
+    type: "recurring",
+    metadata: {
+      merchant: String(merchant),
+      category: String(category),
+      amount_cents: amount,
+      interval_days: interval,
+    },
+  };
+}
+
+function actionControls(insight, actions) {
+  state.insights.set(insight.id, insight);
+  const latest = state.actions.get(insight.id);
+  return `
+    <div class="action-state">${latest ? actionStatus(latest) : "Needs review"}</div>
+    <div class="action-row">
+      ${actions.map(([action, label]) => `
+        <button type="button" data-insight-id="${escapeHTML(insight.id)}" data-action="${escapeHTML(action)}">${escapeHTML(label)}</button>
+      `).join("")}
+    </div>
+  `;
+}
+
+function actionStatus(action) {
+  const label = String(action.action || "").replaceAll("_", " ");
+  if (action.action === "snooze" && action.snoozed_until) {
+    return `Snoozed until ${shortDate(action.snoozed_until)}`;
+  }
+  return `Last action: ${label}`;
 }
 
 function renderPresence(presence) {
@@ -434,6 +518,67 @@ async function sendTelegramDemo() {
   }
 }
 
+async function handleInsightAction(event) {
+  const button = event.target.closest("button[data-insight-id][data-action]");
+  if (!button) {
+    return;
+  }
+  const insight = state.insights.get(button.dataset.insightId);
+  if (!insight) {
+    return;
+  }
+
+  button.disabled = true;
+  const action = button.dataset.action;
+  const body = {
+    insight_id: insight.id,
+    insight_type: insight.type,
+    action,
+    reason: "web_cockpit",
+    metadata: insight.metadata,
+  };
+  if (action === "snooze") {
+    body.snoozed_until = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+  }
+
+  try {
+    const stored = await jsonApi("/api/v1/insights/actions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    state.actions.set(stored.insight_id, stored);
+    if (action === "suppress_similar" && insight.metadata.alert_type) {
+      await suppressSimilarAlertType(insight.metadata.alert_type);
+    }
+    pushLive("Insight action", `${action.replaceAll("_", " ")} saved`);
+    await loadAll();
+  } catch (error) {
+    pushLive("Insight action failed", error.message);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function suppressSimilarAlertType(alertType) {
+  const current = new Set((state.preferences?.disabled_alert_types || []).map(String));
+  current.add(String(alertType));
+  const prefs = await jsonApi("/api/v1/notifications/preferences", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      telegram_enabled: els.prefTelegram.checked,
+      batch_non_critical: els.prefBatch.checked,
+      quiet_hours_enabled: els.prefQuiet.checked,
+      quiet_start_minute: timeToMinutes(els.prefQuietStart.value),
+      quiet_end_minute: timeToMinutes(els.prefQuietEnd.value),
+      quiet_timezone: els.prefTimezone.value.trim() || "UTC",
+      disabled_alert_types: Array.from(current).sort(),
+    }),
+  });
+  renderPreferences(prefs);
+}
+
 function connectWebSocket() {
   if (!state.accessToken || state.ws) {
     return;
@@ -558,6 +703,8 @@ els.manualForm.addEventListener("submit", addManualTransaction);
 els.prefsForm.addEventListener("submit", savePreferences);
 els.confirmTelegramButton.addEventListener("click", confirmTelegram);
 els.demoTelegramButton.addEventListener("click", sendTelegramDemo);
+els.alertsList.addEventListener("click", handleInsightAction);
+els.recurringList.addEventListener("click", handleInsightAction);
 els.dateFrom.addEventListener("change", loadAll);
 els.dateTo.addEventListener("change", loadAll);
 

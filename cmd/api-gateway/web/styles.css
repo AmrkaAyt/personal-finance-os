@@ -388,6 +388,30 @@ th {
   font-size: 13px;
 }
 
+.actionable {
+  display: grid;
+  gap: 8px;
+}
+
+.action-state {
+  color: var(--amber);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.action-row button {
+  min-height: 32px;
+  padding: 0 9px;
+  font-size: 12px;
+}
+
 .live {
   max-height: 340px;
   overflow: auto;

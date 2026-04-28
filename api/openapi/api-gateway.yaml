@@ -142,6 +142,32 @@ paths:
       responses:
         '200':
           description: Recurring patterns
+  /api/v1/insights/actions:
+    get:
+      summary: List current user's recorded actions for alerts, recurring patterns, and other insights
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: limit
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Insight actions list
+    post:
+      summary: Record or update a user action for an insight
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InsightActionRequest'
+      responses:
+        '200':
+          description: Stored insight action
   /api/v1/notifications/status:
     get:
       summary: Inspect notification worker status and Telegram configuration
@@ -373,3 +399,31 @@ components:
         occurred_at:
           type: string
           format: date-time
+    InsightActionRequest:
+      type: object
+      required: [insight_id, insight_type, action]
+      properties:
+        insight_id:
+          type: string
+        insight_type:
+          type: string
+          enum: [alert, recurring]
+        action:
+          type: string
+          enum:
+            - acknowledge
+            - snooze
+            - resolve
+            - suppress_similar
+            - confirm_recurring
+            - reject_recurring
+            - recategorize
+        reason:
+          type: string
+        snoozed_until:
+          type: string
+          format: date-time
+        metadata:
+          type: object
+          additionalProperties:
+            type: string

@@ -51,6 +51,7 @@ The first web cockpit is served directly by `api-gateway` and uses the same gate
 - watch import and parser status,
 - inspect monthly spend, alerts, recurring candidates, and transactions,
 - add manual transactions,
+- acknowledge, snooze, resolve, suppress, confirm, or reject insight signals,
 - manage notification preferences,
 - confirm Telegram link codes,
 - receive realtime transaction and alert updates over WebSocket.
@@ -139,6 +140,21 @@ curl http://localhost:8085/api/v1/rules/config
 ```bash
 curl -H "Authorization: Bearer <access_token>" \
   http://localhost:8080/api/v1/notifications/status
+```
+
+### List recorded insight actions
+```bash
+curl -H "Authorization: Bearer <access_token>" \
+  http://localhost:8080/api/v1/insights/actions
+```
+
+### Record an action for an alert or recurring signal
+```bash
+curl -X POST \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{"insight_id":"alert:2026-04-28:large_transaction:warning","insight_type":"alert","action":"acknowledge","metadata":{"alert_type":"large_transaction"}}' \
+  http://localhost:8080/api/v1/insights/actions
 ```
 
 ### Get notification preferences
@@ -237,7 +253,7 @@ Details:
 - [Environment Structure](docs/environment.md)
 
 ## Current scope
-This bootstrap includes shared platform code, OpenAPI, graceful shutdown, startup retry/backoff for external dependencies, versioned database migrations, one-shot Kafka bootstrap, sensitive-data maintenance, quarantine operator tooling, a gateway-served web cockpit, and a working Docker-backed event pipeline for auth, gateway routing, import, parsing, ledger persistence, rule evaluation, notification dispatch, analytics projections, and realtime fan-out. Gateway-level integration tests cover `login -> import -> parse` and `login -> create transaction -> analytics/alerts`. Telegram V1 now supports real outbound delivery, one-time link-code binding confirmed under JWT, user-level notification preferences, quiet windows, alert digest batching, and statement document intake for `CSV` and text-based `PDF`.
+This bootstrap includes shared platform code, OpenAPI, graceful shutdown, startup retry/backoff for external dependencies, versioned database migrations, one-shot Kafka bootstrap, sensitive-data maintenance, quarantine operator tooling, a gateway-served web cockpit, insight action tracking, and a working Docker-backed event pipeline for auth, gateway routing, import, parsing, ledger persistence, rule evaluation, notification dispatch, analytics projections, and realtime fan-out. Gateway-level integration tests cover `login -> import -> parse` and `login -> create transaction -> analytics/alerts`. Telegram V1 now supports real outbound delivery, one-time link-code binding confirmed under JWT, user-level notification preferences, quiet windows, alert digest batching, and statement document intake for `CSV` and text-based `PDF`.
 
 ## Documentation
 - [Current Implementation Status](docs/implementation-status.md)

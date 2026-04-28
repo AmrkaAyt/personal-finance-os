@@ -94,6 +94,8 @@ func main() {
 	mux.Handle("POST /api/v1/transactions", svc.protected(svc.proxyHandler(svc.ledgerProxy), writeRoles...))
 	mux.Handle("GET /api/v1/categories", svc.protected(svc.proxyHandler(svc.ledgerProxy), readRoles...))
 	mux.Handle("GET /api/v1/recurring", svc.protected(svc.proxyHandler(svc.ledgerProxy), readRoles...))
+	mux.Handle("GET /api/v1/insights/actions", svc.protected(svc.proxyHandler(svc.ledgerProxy), readRoles...))
+	mux.Handle("POST /api/v1/insights/actions", svc.protected(svc.proxyHandler(svc.ledgerProxy), writeRoles...))
 
 	mux.Handle("GET /api/v1/notifications/status", svc.protected(svc.proxyHandler(svc.notificationProxy), readRoles...))
 	mux.Handle("GET /api/v1/notifications/preferences", svc.protected(svc.proxyHandler(svc.notificationProxy), readRoles...))
